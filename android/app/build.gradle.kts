@@ -9,7 +9,9 @@ plugins {
 
 android {
     namespace = "com.example.snsnovahack"
-    compileSdk = flutter.compileSdkVersion
+    // permission_handler_android が 37 以上を要求するため、
+    // Flutter の既定（36）ではなく明示的に上げている。
+    compileSdk = 37
     ndkVersion = flutter.ndkVersion
 
     compileOptions {

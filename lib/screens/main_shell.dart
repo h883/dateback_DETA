@@ -1,7 +1,11 @@
+import 'dart:async';
+
 import 'package:flutter/material.dart';
 
 import '../api/bloom_api.dart';
 import '../models/models.dart';
+import '../proximity/ble_proximity_service.dart';
+import '../proximity/proximity_service.dart';
 import '../theme/bloom_theme.dart';
 import 'tabs/add_friend_tab.dart';
 import 'tabs/home_tab.dart';
@@ -40,21 +44,85 @@ class MainShell extends StatefulWidget {
   State<MainShell> createState() => _MainShellState();
 }
 
-class _MainShellState extends State<MainShell> {
+class _MainShellState extends State<MainShell> with WidgetsBindingObserver {
   static const _initialTab = ShellTab.home;
 
   late final PageController _pager =
       PageController(initialPage: _initialTab.index);
   ShellTab _tab = _initialTab;
 
+  /// 仕様書 14：自動近距離検知は画面と独立して動かす。
+  late final ProximityService _proximity = BleProximityService();
+  StreamSubscription<List<NearbyPeer>>? _peerSub;
+
+  /// 交換済みの相手。仕様書 6.3 のクールダウンはサーバーが見るが、
+  /// 無駄な往復を減らすため端末側でも直近の相手を覚えておく。
+  final _recentlyExchanged = <String, DateTime>{};
+
   /// 画面に出すトースト。仕様書 14 のとおり、どの画面にいても出す。
   String? _toast;
   int _toastToken = 0;
 
   @override
+  void initState() {
+    super.initState();
+    WidgetsBinding.instance.addObserver(this);
+    _startProximity();
+  }
+
+  @override
   void dispose() {
+    WidgetsBinding.instance.removeObserver(this);
+    _peerSub?.cancel();
+    _proximity.dispose();
     _pager.dispose();
     super.dispose();
+  }
+
+  /// 仕様書 18.1：フォアグラウンドの間だけ動かす。
+  @override
+  void didChangeAppLifecycleState(AppLifecycleState state) {
+    if (state == AppLifecycleState.resumed) {
+      _startProximity();
+    } else if (state == AppLifecycleState.paused) {
+      unawaited(_proximity.stop());
+    }
+  }
+
+  Future<void> _startProximity() async {
+    final beaconId = widget.profile.beaconId;
+    if (beaconId == null) return;
+
+    _peerSub ??= _proximity.peers.listen(_onPeersFound);
+    await _proximity.start(myBeaconId: beaconId);
+  }
+
+  /// 仕様書 6.1：双方で近距離が確認できたら、ボタンを押させず自動で交換する。
+  Future<void> _onPeersFound(List<NearbyPeer> peers) async {
+    final now = DateTime.now();
+    final fresh = peers
+        .where((p) => now.difference(
+              _recentlyExchanged[p.beaconId] ?? DateTime(0),
+            ) >
+            const Duration(minutes: 1))
+        .toList();
+    if (fresh.isEmpty) return;
+
+    try {
+      final resolved =
+          await widget.api.resolveBeacons(fresh.map((p) => p.beaconId).toList());
+      for (final friend in resolved.friends) {
+        final result = await widget.api.reportProximity(peerUid: friend.uid);
+        if (result.exchanged && mounted) {
+          showToast('${result.peerName}さんとデータを共有しました');
+        }
+      }
+      for (final peer in fresh) {
+        _recentlyExchanged[peer.beaconId] = now;
+      }
+    } catch (_) {
+      // 通信に失敗しても次のスキャンで拾い直す。
+    }
   }
 
   void _goTo(ShellTab tab) {
@@ -92,7 +160,12 @@ class _MainShellState extends State<MainShell> {
                         setState(() => _tab = ShellTab.values[i]),
                     children: [
                       PostTab(api: widget.api, onPosted: _onPosted),
-                      HomeTab(api: widget.api, onToast: showToast),
+                      HomeTab(
+                        api: widget.api,
+                        onToast: showToast,
+                        proximity: _proximity,
+                        myBeaconId: widget.profile.beaconId,
+                      ),
                       ProfileTab(
                         api: widget.api,
                         profile: widget.profile,
@@ -100,7 +173,11 @@ class _MainShellState extends State<MainShell> {
                         onSignOut: widget.onSignOut,
                         onToast: showToast,
                       ),
-                      AddFriendTab(api: widget.api, onToast: showToast),
+                      AddFriendTab(
+                        api: widget.api,
+                        onToast: showToast,
+                        proximity: _proximity,
+                      ),
                     ],
                   ),
                   if (_toast != null)

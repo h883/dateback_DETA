@@ -46,6 +46,7 @@ interface UserRow {
   username: string;
   bio: string;
   avatar_key: string | null;
+  beacon_id?: string | null;
 }
 
 function toProfile(row: UserRow) {
@@ -55,6 +56,45 @@ function toProfile(row: UserRow) {
     bio: row.bio,
     avatarPath: row.avatar_key ? `/api/media/${row.avatar_key}` : null,
   };
+}
+
+/**
+ * 自分向けのプロフィール。BLE でアドバタイズする beaconId を含む。
+ * 他人のプロフィールには出さない。
+ */
+function toSelfProfile(row: UserRow) {
+  return { ...toProfile(row), beaconId: row.beacon_id ?? null };
+}
+
+/** 4 バイトの近距離識別情報。電波に載るのはこれだけ。 */
+function newBeaconId(): string {
+  const bytes = crypto.getRandomValues(new Uint8Array(4));
+  return [...bytes].map((b) => b.toString(16).padStart(2, '0')).join('');
+}
+
+/**
+ * beacon_id が未発行なら採番する。既存ユーザーも初回アクセスで埋まる。
+ * 一意制約に当たったら引き直す。
+ */
+async function ensureBeaconId(env: Env, uid: string): Promise<string | null> {
+  const row = await env.DB.prepare('SELECT beacon_id FROM users WHERE uid = ?')
+    .bind(uid)
+    .first<{ beacon_id: string | null }>();
+  if (!row) return null;
+  if (row.beacon_id) return row.beacon_id;
+
+  for (let attempt = 0; attempt < 5; attempt++) {
+    const candidate = newBeaconId();
+    try {
+      await env.DB.prepare('UPDATE users SET beacon_id = ? WHERE uid = ?')
+        .bind(candidate, uid)
+        .run();
+      return candidate;
+    } catch {
+      // UNIQUE 衝突。引き直す。
+    }
+  }
+  return null;
 }
 
 interface PostRow {
@@ -171,6 +211,11 @@ async function route(
     case 'friends':
       return handleFriends(method, rest, request, env, user);
     case 'proximity':
+      if (rest[0] === 'resolve') {
+        return method === 'POST'
+          ? handleResolveBeacons(request, env, user)
+          : fail(405, 'method_not_allowed', method);
+      }
       return method === 'POST'
         ? handleProximity(request, env, user)
         : fail(405, 'method_not_allowed', method);
@@ -206,7 +251,8 @@ async function handleMe(
       .first<UserRow>();
     // プロフィール未設定。クライアントはこれを見て設定画面へ送る。
     if (!row) return fail(404, 'profile_not_set', 'Profile is not set up yet');
-    return json(toProfile(row));
+    row.beacon_id = await ensureBeaconId(env, user.uid);
+    return json(toSelfProfile(row));
   }
 
   if (method === 'PUT') {
@@ -251,7 +297,8 @@ async function handleMe(
     )
       .bind(user.uid)
       .first<UserRow>();
-    return json(toProfile(row!));
+    row!.beacon_id = await ensureBeaconId(env, user.uid);
+    return json(toSelfProfile(row!));
   }
 
   return fail(405, 'method_not_allowed', method);
@@ -612,6 +659,54 @@ async function handleFriends(
 // ---------------------------------------------------------------- /api/proximity
 
 /**
+ * BLE で拾った beaconId をまとめてユーザーに解決する。
+ *
+ * 仕様書 6.4：通常の自動検知では非フレンドを画面に出さない。
+ * フレンド追加モードのときだけ mode=discover で非フレンドも返す。
+ */
+async function handleResolveBeacons(
+  request: Request,
+  env: Env,
+  user: VerifiedUser,
+): Promise<Response> {
+  const body = (await request.json().catch(() => null)) as {
+    beaconIds?: unknown;
+    mode?: unknown;
+  } | null;
+
+  const ids = Array.isArray(body?.beaconIds)
+    ? body.beaconIds.filter((v): v is string => typeof v === 'string').slice(0, 30)
+    : [];
+  if (ids.length === 0) return json({ friends: [], strangers: [] });
+
+  const placeholders = ids.map(() => '?').join(',');
+  const { results } = await env.DB.prepare(
+    `SELECT u.uid, u.username, u.bio, u.avatar_key, u.beacon_id,
+            EXISTS (
+              SELECT 1 FROM friendships f
+               WHERE f.status = 'accepted'
+                 AND ((f.requester = ?1 AND f.addressee = u.uid)
+                   OR (f.requester = u.uid AND f.addressee = ?1))
+            ) AS is_friend
+       FROM users u
+      WHERE u.beacon_id IN (${placeholders})
+        AND u.uid <> ?1`,
+  )
+    .bind(user.uid, ...ids)
+    .all<UserRow & { is_friend: number }>();
+
+  const friends = results.filter((r) => r.is_friend === 1).map(toProfile);
+  const strangers =
+    body?.mode === 'discover'
+      ? results.filter((r) => r.is_friend !== 1).map(toProfile)
+      : [];
+
+  return json({ friends, strangers });
+}
+
+
+
+/**
  * 近距離イベントの記録と閲覧権限交換（仕様書 3.13 / 4.3 / 6.3）。
  *
  * BLE で相手を見つけたクライアントがこれを叩く。双方向に閲覧可能時刻を
@@ -622,9 +717,22 @@ async function handleProximity(
   env: Env,
   user: VerifiedUser,
 ): Promise<Response> {
-  const body = (await request.json().catch(() => null)) as { peerUid?: string } | null;
-  const peer = body?.peerUid;
-  if (!peer) return fail(400, 'bad_request', 'peerUid required');
+  const body = (await request.json().catch(() => null)) as {
+    peerUid?: string;
+    beaconId?: string;
+  } | null;
+
+  // BLE で拾えるのは beaconId だけ。uid への解決はここで行う。
+  let peer = body?.peerUid ?? null;
+  if (!peer && body?.beaconId) {
+    const row = await env.DB.prepare('SELECT uid FROM users WHERE beacon_id = ?')
+      .bind(body.beaconId)
+      .first<{ uid: string }>();
+    if (!row) return fail(404, 'unknown_beacon', '相手が特定できませんでした');
+    peer = row.uid;
+  }
+
+  if (!peer) return fail(400, 'bad_request', 'peerUid or beaconId required');
   if (peer === user.uid) return fail(400, 'bad_request', '自分とは交換できません');
 
   // 仕様書 6.4 / 10.3：交換はフレンド同士に限る。
