@@ -1,0 +1,10 @@
+.git
+.dart_tool
+.idea
+.vscode
+build
+android/.gradle
+ios/Pods
+coverage
+*.iml
+*.log
