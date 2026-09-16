@@ -8,7 +8,6 @@ import 'package:google_sign_in/google_sign_in.dart';
 import '../theme/bloom_theme.dart';
 import '../widgets/bloom_logo.dart';
 import '../widgets/google_logo.dart';
-import 'home_screen.dart';
 
 /// ログイン画面（Google アカウント連携）。
 class LoginScreen extends StatefulWidget {
@@ -32,11 +31,30 @@ class _LoginScreenState extends State<LoginScreen>
   }
 
   Future<void> _signInWithGoogle() async {
+    // 非同期の合間に context を跨がないよう、先に握っておく。
+    final navigator = Navigator.of(context);
+    final messenger = ScaffoldMessenger.of(context);
     var dialogShown = false;
+
+    // 「認証連携中」ダイアログは自分では閉じない。開いた側が必ず閉じる。
+    void closeDialog() {
+      if (!dialogShown) return;
+      dialogShown = false;
+      if (navigator.mounted) navigator.pop();
+    }
+
     try {
       // アカウント選択（Google のネイティブピッカー）。
       final googleUser = await GoogleSignIn().signIn();
-      if (googleUser == null) return; // ユーザーがキャンセルした。
+      if (googleUser == null) {
+        // キャンセル。無反応だと固まったように見えるので必ず知らせる。
+        if (mounted) {
+          messenger.showSnackBar(
+            const SnackBar(content: Text('ログインをキャンセルしました')),
+          );
+        }
+        return;
+      }
       if (!mounted) return;
 
       dialogShown = true;
@@ -44,6 +62,8 @@ class _LoginScreenState extends State<LoginScreen>
         showDialog<void>(
           context: context,
           barrierDismissible: false,
+          // closeDialog の navigator と同じものに積むため root は使わない。
+          useRootNavigator: false,
           barrierColor: BloomColors.scrim.withValues(alpha: 0.6),
           builder: (_) => const _ConnectingDialog(
             message: 'Googleアカウントで安全にログインしています...',
@@ -58,16 +78,14 @@ class _LoginScreenState extends State<LoginScreen>
       );
       await FirebaseAuth.instance.signInWithCredential(credential);
 
+      closeDialog();
       if (!mounted) return;
-      final navigator = Navigator.of(context);
-      navigator.pop(); // 「認証連携中」ダイアログを閉じる。
-      navigator.pushReplacement(
-        MaterialPageRoute(builder: (_) => const HomeScreen()),
-      );
+      // 行き先は AuthGate が決める（プロフィール未設定なら設定画面へ）。
+      navigator.popUntil((route) => route.isFirst);
     } catch (e) {
+      closeDialog();
       if (mounted) {
-        if (dialogShown) Navigator.of(context).pop();
-        ScaffoldMessenger.of(context).showSnackBar(
+        messenger.showSnackBar(
           SnackBar(content: Text('ログインに失敗しました: $e')),
         );
       }
@@ -384,23 +402,11 @@ class _TermsNote extends StatelessWidget {
 }
 
 /// 認証連携中のモーダル。
-class _ConnectingDialog extends StatefulWidget {
+/// 自分では閉じない。閉じるのは表示した側（_signInWithGoogle）の責務。
+class _ConnectingDialog extends StatelessWidget {
   const _ConnectingDialog({required this.message});
 
   final String message;
-
-  @override
-  State<_ConnectingDialog> createState() => _ConnectingDialogState();
-}
-
-class _ConnectingDialogState extends State<_ConnectingDialog> {
-  @override
-  void initState() {
-    super.initState();
-    Future<void>.delayed(const Duration(milliseconds: 1600), () {
-      if (mounted) Navigator.of(context).pop();
-    });
-  }
 
   @override
   Widget build(BuildContext context) {
@@ -438,7 +444,7 @@ class _ConnectingDialogState extends State<_ConnectingDialog> {
                 Text('認証連携中', style: BloomText.headlineSm),
                 const SizedBox(height: 4),
                 Text(
-                  widget.message,
+                  message,
                   style: BloomText.bodySm
                       .copyWith(color: BloomColors.onSurfaceVariant),
                   textAlign: TextAlign.center,

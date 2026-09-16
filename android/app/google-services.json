@@ -14,6 +14,14 @@
       },
       "oauth_client": [
         {
+          "client_id": "851433910657-6l8qb737nk09vccfeshp71n9hivaql9m.apps.googleusercontent.com",
+          "client_type": 1,
+          "android_info": {
+            "package_name": "com.example.snsnovahack",
+            "certificate_hash": "68c0b92398bec599fd289204231a25dd95bf7f7f"
+          }
+        },
+        {
           "client_id": "851433910657-aaf186omqiip7ohm8ilnc7hbfb4opvj6.apps.googleusercontent.com",
           "client_type": 1,
           "android_info": {

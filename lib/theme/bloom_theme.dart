@@ -53,6 +53,9 @@ abstract final class BloomColors {
   static const tertiaryFixedDim = Color(0xFF4FDBCC);
   static const onTertiaryFixed = Color(0xFF00201D);
 
+  /// いいねの赤（モックの --red）。
+  static const heart = Color(0xFFEA5B62);
+
   static const error = Color(0xFFFFB4AB);
 }
 
@@ -188,6 +191,17 @@ ThemeData buildBloomTheme() {
   return base.copyWith(
     scaffoldBackgroundColor: BloomColors.surface,
     splashFactory: InkRipple.splashFactory,
+    // 既定の SnackBar は inverseSurface（＝白）になってしまうので黒地に揃える。
+    snackBarTheme: SnackBarThemeData(
+      backgroundColor: BloomColors.surfaceContainerHigh,
+      contentTextStyle: BloomText.bodyMd.copyWith(color: BloomColors.onSurface),
+      actionTextColor: BloomColors.primary,
+      behavior: SnackBarBehavior.floating,
+      shape: RoundedRectangleBorder(
+        borderRadius: BorderRadius.circular(BloomRadius.md),
+      ),
+      elevation: 0,
+    ),
     textTheme: base.textTheme.copyWith(
       displayLarge: BloomText.displayLg,
       headlineLarge: BloomText.headlineLg,

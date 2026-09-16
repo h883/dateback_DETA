@@ -2,7 +2,8 @@ import 'package:firebase_core/firebase_core.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 
-import 'screens/onboarding_screen.dart';
+import 'api/bloom_api.dart';
+import 'screens/auth_gate.dart';
 import 'theme/bloom_theme.dart';
 import 'firebase_options.dart';
 
@@ -34,7 +35,7 @@ class BloomApp extends StatelessWidget {
       theme: theme,
       darkTheme: theme,
       themeMode: ThemeMode.dark,
-      home: const OnboardingScreen(),
+      home: AuthGate(api: BloomApi(baseUrl: BloomApi.defaultBaseUrl)),
     );
   }
 }
