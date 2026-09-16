@@ -1,30 +1,47 @@
-// This is a basic Flutter widget test.
-//
-// To perform an interaction with a widget in your test, use the WidgetTester
-// utility in the flutter_test package. For example, you can send tap and scroll
-// gestures. You can also use WidgetTester to find child widgets in the widget
-// tree, read text, and verify that the values of widget properties are correct.
-
-import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 
-import 'package:workspace/main.dart';
+import 'package:sns_novahack/main.dart';
+
+/// STEP 2 のレーダーは常時アニメーションしているため pumpAndSettle は使えない。
+/// ページ遷移が終わるだけの時間を明示的に進める。
+Future<void> _settlePage(WidgetTester tester) async {
+  await tester.pump();
+  await tester.pump(const Duration(milliseconds: 600));
+}
 
 void main() {
-  testWidgets('Counter increments smoke test', (WidgetTester tester) async {
-    // Build our app and trigger a frame.
-    await tester.pumpWidget(const MyApp());
+  testWidgets('チュートリアルは3ステップを順に進み、最後にログインへ遷移できる',
+      (WidgetTester tester) async {
+    await tester.pumpWidget(const BloomApp());
 
-    // Verify that our counter starts at 0.
-    expect(find.text('0'), findsOneWidget);
-    expect(find.text('1'), findsNothing);
+    // STEP 1
+    expect(find.text('投稿しよう'), findsOneWidget);
+    expect(find.text('次へ'), findsOneWidget);
 
-    // Tap the '+' icon and trigger a frame.
-    await tester.tap(find.byIcon(Icons.add));
-    await tester.pump();
+    // STEP 2
+    await tester.tap(find.text('次へ'));
+    await _settlePage(tester);
+    expect(find.text('友達と会おう'), findsOneWidget);
 
-    // Verify that our counter has incremented.
-    expect(find.text('0'), findsNothing);
-    expect(find.text('1'), findsOneWidget);
+    // STEP 3
+    await tester.tap(find.text('次へ'));
+    await _settlePage(tester);
+    expect(find.text('思い出がひらく'), findsOneWidget);
+    expect(find.text('はじめる（ログインへ進む）'), findsOneWidget);
+
+    // ログイン画面へ
+    await tester.tap(find.text('はじめる（ログインへ進む）'));
+    await _settlePage(tester);
+    expect(find.text('Googleアカウントで続ける'), findsOneWidget);
+    expect(find.text('対面BLE暗号化セーフティ'), findsOneWidget);
+  });
+
+  testWidgets('スキップで最終ステップまで飛べる', (WidgetTester tester) async {
+    await tester.pumpWidget(const BloomApp());
+
+    await tester.tap(find.text('スキップ'));
+    await _settlePage(tester);
+
+    expect(find.text('思い出がひらく'), findsOneWidget);
   });
 }
