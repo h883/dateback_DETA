@@ -26,8 +26,10 @@ class _PostTabState extends State<PostTab> with WidgetsBindingObserver {
   static const _recordDuration = Duration(seconds: 2);
 
   CameraController? _controller;
-  Future<void>? _initFuture;
   String? _cameraError;
+
+  /// 初期化中の多重起動を防ぐ。回転のたびに resumed が来るため。
+  bool _settingUp = false;
 
   PostKind _mode = PostKind.film35mm;
   bool _recording = false;
@@ -54,17 +56,28 @@ class _PostTabState extends State<PostTab> with WidgetsBindingObserver {
 
   @override
   void didChangeAppLifecycleState(AppLifecycleState state) {
-    final controller = _controller;
-    if (controller == null || !controller.value.isInitialized) return;
     if (state == AppLifecycleState.inactive) {
-      controller.dispose();
-      _controller = null;
+      _disposeCamera();
     } else if (state == AppLifecycleState.resumed) {
       _setUpCamera();
     }
   }
 
+  /// 破棄済みのコントローラを build が掴まないよう、参照を外してから捨てる。
+  void _disposeCamera() {
+    final controller = _controller;
+    if (controller == null) return;
+    if (mounted) {
+      setState(() => _controller = null);
+    } else {
+      _controller = null;
+    }
+    controller.dispose();
+  }
+
   Future<void> _setUpCamera() async {
+    if (_settingUp || _controller != null) return;
+    _settingUp = true;
     try {
       final cameras = await availableCameras();
       if (cameras.isEmpty) {
@@ -81,21 +94,24 @@ class _PostTabState extends State<PostTab> with WidgetsBindingObserver {
         // 8mm は音も込みで残す。
         enableAudio: true,
       );
-      final future = controller.initialize();
-      if (!mounted) return;
+      // 初期化が済んでから公開する。半端な状態を build に見せない。
+      await controller.initialize();
+      if (!mounted) {
+        await controller.dispose();
+        return;
+      }
       setState(() {
         _controller = controller;
-        _initFuture = future;
         _cameraError = null;
       });
-      await future;
-      if (mounted) setState(() {});
     } on CameraException catch (e) {
       if (mounted) {
         setState(() => _cameraError = 'カメラを使えません: ${e.description ?? e.code}');
       }
     } catch (e) {
       if (mounted) setState(() => _cameraError = 'カメラを使えません: $e');
+    } finally {
+      _settingUp = false;
     }
   }
 
@@ -230,23 +246,15 @@ class _PostTabState extends State<PostTab> with WidgetsBindingObserver {
           const Center(
             child: CircularProgressIndicator(color: BloomColors.primaryContainer),
           )
+        else if (!controller.value.isInitialized)
+          const Center(
+            child: CircularProgressIndicator(color: BloomColors.primaryContainer),
+          )
+        // 撮影済みの静止画があればそれを見せる（8mm は撮り終えたら素通し）。
+        else if (_stillPreview != null)
+          Image.memory(_stillPreview!, fit: BoxFit.cover)
         else
-          FutureBuilder<void>(
-            future: _initFuture,
-            builder: (context, snapshot) {
-              if (snapshot.connectionState != ConnectionState.done) {
-                return const Center(
-                  child: CircularProgressIndicator(
-                    color: BloomColors.primaryContainer,
-                  ),
-                );
-              }
-              // 撮影済みの静止画があればそれを見せる（8mm は撮り終えたら素通し）。
-              final still = _stillPreview;
-              if (still != null) return Image.memory(still, fit: BoxFit.cover);
-              return _previewFilter(CameraPreview(controller));
-            },
-          ),
+          _previewFilter(CameraPreview(controller)),
         if (_recording) const _RecordChip(),
         Positioned(top: 14, left: 0, right: 0, child: Center(child: _modeSwitch())),
         Positioned(left: 18, top: 18, child: _copy()),

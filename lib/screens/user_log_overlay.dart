@@ -3,6 +3,7 @@ import 'package:flutter/material.dart';
 import '../api/bloom_api.dart';
 import '../models/models.dart';
 import '../theme/bloom_theme.dart';
+import '../widgets/post_media.dart';
 import '../widgets/remote_image.dart';
 
 /// ホームでメディアを長押ししたときに開く、その人のログ。
@@ -81,7 +82,7 @@ class _LogItem extends StatelessWidget {
           child: Stack(
             fit: StackFit.expand,
             children: [
-              RemoteImage(api: api, path: post.mediaPath),
+              PostMedia(api: api, post: post),
               Positioned(
                 right: 12,
                 bottom: 11,
