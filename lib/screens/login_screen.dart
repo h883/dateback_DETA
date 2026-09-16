@@ -1,10 +1,14 @@
+import 'dart:async';
 import 'dart:ui' as ui;
 
+import 'package:firebase_auth/firebase_auth.dart';
 import 'package:flutter/material.dart';
+import 'package:google_sign_in/google_sign_in.dart';
 
 import '../theme/bloom_theme.dart';
 import '../widgets/bloom_logo.dart';
 import '../widgets/google_logo.dart';
+import 'home_screen.dart';
 
 /// ログイン画面（Google アカウント連携）。
 class LoginScreen extends StatefulWidget {
@@ -28,15 +32,46 @@ class _LoginScreenState extends State<LoginScreen>
   }
 
   Future<void> _signInWithGoogle() async {
-    // TODO(auth): 実際の Google 認証と Bloom ノードへの接続をここで行う。
-    await showDialog<void>(
-      context: context,
-      barrierDismissible: false,
-      barrierColor: BloomColors.scrim.withValues(alpha: 0.6),
-      builder: (_) => const _ConnectingDialog(
-        message: 'Googleアカウントで安全にログインしています...',
-      ),
-    );
+    var dialogShown = false;
+    try {
+      // アカウント選択（Google のネイティブピッカー）。
+      final googleUser = await GoogleSignIn().signIn();
+      if (googleUser == null) return; // ユーザーがキャンセルした。
+      if (!mounted) return;
+
+      dialogShown = true;
+      unawaited(
+        showDialog<void>(
+          context: context,
+          barrierDismissible: false,
+          barrierColor: BloomColors.scrim.withValues(alpha: 0.6),
+          builder: (_) => const _ConnectingDialog(
+            message: 'Googleアカウントで安全にログインしています...',
+          ),
+        ),
+      );
+
+      final googleAuth = await googleUser.authentication;
+      final credential = GoogleAuthProvider.credential(
+        accessToken: googleAuth.accessToken,
+        idToken: googleAuth.idToken,
+      );
+      await FirebaseAuth.instance.signInWithCredential(credential);
+
+      if (!mounted) return;
+      final navigator = Navigator.of(context);
+      navigator.pop(); // 「認証連携中」ダイアログを閉じる。
+      navigator.pushReplacement(
+        MaterialPageRoute(builder: (_) => const HomeScreen()),
+      );
+    } catch (e) {
+      if (mounted) {
+        if (dialogShown) Navigator.of(context).pop();
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text('ログインに失敗しました: $e')),
+        );
+      }
+    }
   }
 
   @override
