@@ -1,0 +1,37 @@
+{
+  "$schema": "node_modules/wrangler/config-schema.json",
+  "name": "bloom-api",
+  "main": "src/index.ts",
+  "compatibility_date": "2025-09-01",
+  "compatibility_flags": ["nodejs_compat"],
+
+  // user@example.com のアカウント。`wrangler login` はこのアカウントで行うこと。
+  "account_id": "YOUR_CLOUDFLARE_ACCOUNT_ID",
+
+  "observability": {
+    "enabled": true
+  },
+
+  "vars": {
+    // Firebase ID トークンの aud / iss の検証に使う。
+    "FIREBASE_PROJECT_ID": "nova-hack2026-366bf"
+  },
+
+  "d1_databases": [
+    {
+      "binding": "DB",
+      "database_name": "bloom",
+      "database_id": "8287e3eb-a958-4693-9bed-abf6cf04c6e1",
+      "migrations_dir": "migrations"
+    }
+  ],
+
+  // メディアの実体置き場。R2 は無料枠でもカード登録が要るので、
+  // カード不要で 1 値あたり 25MB まで置ける KV を使っている。
+  "kv_namespaces": [
+    {
+      "binding": "MEDIA",
+      "id": "728fd7b51a3846458c038fd43f32a654"
+    }
+  ]
+}
