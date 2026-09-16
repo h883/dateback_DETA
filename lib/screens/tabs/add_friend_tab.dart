@@ -1,7 +1,10 @@
+import 'dart:async';
+
 import 'package:flutter/material.dart';
 
 import '../../api/bloom_api.dart';
 import '../../models/models.dart';
+import '../../proximity/proximity_service.dart';
 import '../../theme/bloom_theme.dart';
 import '../../widgets/remote_image.dart';
 
@@ -10,10 +13,16 @@ import '../../widgets/remote_image.dart';
 /// この画面を開いている間だけ、フレンド未登録のユーザーを候補として出す
 /// （仕様書 6.4 / 7.2）。BLE が入るまでは API の候補一覧で代用する。
 class AddFriendTab extends StatefulWidget {
-  const AddFriendTab({super.key, required this.api, required this.onToast});
+  const AddFriendTab({
+    super.key,
+    required this.api,
+    required this.onToast,
+    required this.proximity,
+  });
 
   final BloomApi api;
   final void Function(String message) onToast;
+  final ProximityService proximity;
 
   @override
   State<AddFriendTab> createState() => _AddFriendTabState();
@@ -27,20 +36,54 @@ class _AddFriendTabState extends State<AddFriendTab> {
   /// 申請を送った相手（承認待ち表示用）。
   final _pendingOut = <String>{};
 
+  /// Bluetooth が使えないときの理由。
+  ProximityStatus? _blockedBy;
+  StreamSubscription<ProximityStatus>? _statusSub;
+
   @override
   void initState() {
     super.initState();
+    _statusSub = widget.proximity.status.listen((status) {
+      if (!mounted) return;
+      if (status == ProximityStatus.bluetoothOff ||
+          status == ProximityStatus.permissionDenied ||
+          status == ProximityStatus.unsupported) {
+        setState(() {
+          _blockedBy = status;
+          _searching = false;
+        });
+      }
+    });
     _search();
   }
 
+  @override
+  void dispose() {
+    _statusSub?.cancel();
+    super.dispose();
+  }
+
+  /// この画面を開いている間だけ非フレンドを探す（仕様書 7.2）。
   Future<void> _search() async {
-    setState(() => _searching = true);
+    setState(() {
+      _searching = true;
+      _blockedBy = null;
+    });
     try {
-      final candidates = await widget.api.fetchNearbyUsers();
       final requests = await widget.api.fetchFriendRequests();
+
+      // BLE で拾った beaconId のうち、非フレンドだけを候補にする。
+      final peers = await widget.proximity.scanOnce();
+      final resolved = peers.isEmpty
+          ? null
+          : await widget.api.resolveBeacons(
+              peers.map((p) => p.beaconId).toList(),
+              discover: true,
+            );
+
       if (!mounted) return;
       setState(() {
-        _candidates = candidates;
+        _candidates = resolved?.strangers ?? const [];
         _requests = requests;
         _pendingOut
           ..clear()
@@ -98,7 +141,7 @@ class _AddFriendTabState extends State<AddFriendTab> {
     return ListView(
       padding: const EdgeInsets.fromLTRB(18, 26, 18, 26),
       children: [
-        _searchState(),
+        if (_blockedBy != null) _blockedNotice(_blockedBy!) else _searchState(),
         const SizedBox(height: 16),
         for (final request in _requests.incoming) ...[
           _IncomingRequest(
@@ -144,6 +187,42 @@ class _AddFriendTabState extends State<AddFriendTab> {
           style: BloomText.bodyMd.copyWith(color: BloomColors.secondary),
         ),
       ],
+    );
+  }
+
+  /// 仕様書 10.4 / 15 の Bluetooth OFF・権限不足の表示。
+  Widget _blockedNotice(ProximityStatus status) {
+    final message = switch (status) {
+      ProximityStatus.bluetoothOff => 'Bluetoothを有効にしてください',
+      ProximityStatus.permissionDenied =>
+        '近くのユーザーを探すにはBluetoothの利用許可が必要です',
+      _ => 'この端末では近くのユーザーを探せません',
+    };
+    return Container(
+      padding: const EdgeInsets.all(BloomSpace.md),
+      decoration: BoxDecoration(
+        color: BloomColors.surfaceContainerLow,
+        border: Border.all(color: BloomColors.outlineVariant),
+        borderRadius: BorderRadius.circular(BloomRadius.base),
+      ),
+      child: Row(
+        children: [
+          const Icon(Icons.bluetooth_disabled,
+              color: BloomColors.secondary, size: 20),
+          const SizedBox(width: 10),
+          Expanded(
+            child: Text(
+              message,
+              style: BloomText.bodySm.copyWith(color: BloomColors.onSurface),
+            ),
+          ),
+          TextButton(
+            onPressed: _search,
+            child: Text('再試行',
+                style: BloomText.labelSm.copyWith(color: BloomColors.primary)),
+          ),
+        ],
+      ),
     );
   }
 

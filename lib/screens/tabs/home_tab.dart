@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 
 import '../../api/bloom_api.dart';
 import '../../models/models.dart';
+import '../../proximity/proximity_service.dart';
 import '../../theme/bloom_theme.dart';
 import '../../widgets/post_media.dart';
 import '../../widgets/remote_image.dart';
@@ -16,10 +17,20 @@ import '../user_log_overlay.dart';
 ///
 /// 横フリックは親の PageView が処理するので、ここでは縦だけ拾う。
 class HomeTab extends StatefulWidget {
-  const HomeTab({super.key, required this.api, required this.onToast});
+  const HomeTab({
+    super.key,
+    required this.api,
+    required this.onToast,
+    required this.proximity,
+    required this.myBeaconId,
+  });
 
   final BloomApi api;
   final void Function(String message) onToast;
+  final ProximityService proximity;
+
+  /// 自分の beaconId。未発行なら null。
+  final String? myBeaconId;
 
   @override
   State<HomeTab> createState() => _HomeTabState();
@@ -124,14 +135,46 @@ class _HomeTabState extends State<HomeTab> {
 
   /// 仕様書 10.3 手動近距離検索。
   ///
-  /// BLE は未接続なので、ここでは「相手が見つからなかった」で終わる。
-  /// 実装が入ったら、見つけた相手の uid で api.reportProximity を呼ぶ。
+  /// BLE で拾えるのは beaconId だけなので、サーバーに解決させてから
+  /// フレンドだけを交換対象にする（6.4）。交換はサーバーが双方向に行う。
   Future<void> _searchNearby() async {
     setState(() => _pull = _PullPhase.searching);
-    await Future<void>.delayed(const Duration(milliseconds: 1200));
-    if (!mounted) return;
-    setState(() => _pull = _PullPhase.idle);
-    widget.onToast('近くにフレンドが見つかりませんでした');
+    try {
+      final peers = await widget.proximity.scanOnce();
+      if (!mounted) return;
+
+      if (peers.isEmpty) {
+        widget.onToast('近くにフレンドが見つかりませんでした');
+        return;
+      }
+
+      final resolved =
+          await widget.api.resolveBeacons(peers.map((p) => p.beaconId).toList());
+      if (!mounted) return;
+
+      if (resolved.friends.isEmpty) {
+        widget.onToast('近くにフレンドが見つかりませんでした');
+        return;
+      }
+
+      var exchanged = false;
+      for (final friend in resolved.friends) {
+        final result = await widget.api.reportProximity(peerUid: friend.uid);
+        if (result.exchanged) {
+          exchanged = true;
+          widget.onToast('${result.peerName}さんとデータを共有しました');
+        }
+      }
+      if (!mounted) return;
+      // 交換したぶん新しく見えるようになった投稿を取り込む。
+      if (exchanged) await _load();
+    } on BloomApiException catch (e) {
+      if (mounted) widget.onToast(e.message);
+    } catch (e) {
+      if (mounted) widget.onToast('検索に失敗しました');
+    } finally {
+      if (mounted) setState(() => _pull = _PullPhase.idle);
+    }
   }
 
   void _openLog() {

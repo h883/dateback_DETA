@@ -199,13 +199,40 @@ class BloomApi {
 
   // ------------------------------------------------------------ 近距離イベント
 
-  /// BLE でフレンドを見つけたときに呼ぶ。双方の閲覧可能時刻が「今」に更新される。
+  /// BLE で拾った beaconId をユーザーに解決する。
+  ///
+  /// [discover] が true のときだけ非フレンドも返る（仕様書 6.4 / 7.2）。
+  Future<ResolvedPeers> resolveBeacons(
+    List<String> beaconIds, {
+    bool discover = false,
+  }) async {
+    final res = await _client.post(
+      _uri('/api/proximity/resolve'),
+      headers: {...await _authHeaders(), 'content-type': 'application/json'},
+      body: jsonEncode({
+        'beaconIds': beaconIds,
+        if (discover) 'mode': 'discover',
+      }),
+    );
+    return ResolvedPeers.fromJson(await _json(res));
+  }
+
+  /// フレンドを近距離で見つけたときに呼ぶ。双方の閲覧可能時刻が「今」に更新される。
   /// 同じ相手と続けて呼んでも、サーバー側のクールダウンで交換は繰り返されない。
-  Future<ProximityResult> reportProximity(String peerUid) async {
+  ///
+  /// [peerUid] と [beaconId] はどちらか一方を渡す。
+  Future<ProximityResult> reportProximity({
+    String? peerUid,
+    String? beaconId,
+  }) async {
+    assert(peerUid != null || beaconId != null);
     final res = await _client.post(
       _uri('/api/proximity'),
       headers: {...await _authHeaders(), 'content-type': 'application/json'},
-      body: jsonEncode({'peerUid': peerUid}),
+      body: jsonEncode({
+        'peerUid': ?peerUid,
+        'beaconId': ?beaconId,
+      }),
     );
     return ProximityResult.fromJson(await _json(res));
   }

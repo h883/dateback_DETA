@@ -24,6 +24,7 @@ class Profile {
     required this.username,
     required this.bio,
     this.avatarPath,
+    this.beaconId,
   });
 
   final String uid;
@@ -38,7 +39,12 @@ class Profile {
         username: json['username'] as String,
         bio: json['bio'] as String? ?? '',
         avatarPath: json['avatarPath'] as String?,
+        beaconId: json['beaconId'] as String?,
       );
+
+  /// BLE でアドバタイズする 4 バイトの識別子（仕様書 3.15）。
+  /// 自分のプロフィールにしか入らない。
+  final String? beaconId;
 }
 
 class Post {
@@ -175,4 +181,26 @@ class ProximityResult {
         peerName: json['peerName'] as String?,
         reason: json['reason'] as String?,
       );
+}
+
+/// beaconId をユーザーに解決した結果。
+class ResolvedPeers {
+  const ResolvedPeers({required this.friends, required this.strangers});
+
+  /// 既存フレンド。閲覧権限の交換対象。
+  final List<Profile> friends;
+
+  /// フレンド未登録の相手。フレンド追加モードのときだけ入る（仕様書 6.4）。
+  final List<Profile> strangers;
+
+  factory ResolvedPeers.fromJson(Map<String, dynamic> json) => ResolvedPeers(
+        friends: (json['friends'] as List)
+            .map((e) => Profile.fromJson(e as Map<String, dynamic>))
+            .toList(),
+        strangers: (json['strangers'] as List)
+            .map((e) => Profile.fromJson(e as Map<String, dynamic>))
+            .toList(),
+      );
+
+  bool get isEmpty => friends.isEmpty && strangers.isEmpty;
 }
