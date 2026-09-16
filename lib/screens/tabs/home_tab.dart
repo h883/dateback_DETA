@@ -3,6 +3,7 @@ import 'package:flutter/material.dart';
 import '../../api/bloom_api.dart';
 import '../../models/models.dart';
 import '../../theme/bloom_theme.dart';
+import '../../widgets/post_media.dart';
 import '../../widgets/remote_image.dart';
 import '../user_log_overlay.dart';
 
@@ -279,7 +280,7 @@ class _HomeTabState extends State<HomeTab> {
                   child: Stack(
                     fit: StackFit.expand,
                     children: [
-                      RemoteImage(api: widget.api, path: post.mediaPath),
+                      PostMedia(api: widget.api, post: post),
                       if (post.kind.isVideo)
                         const Positioned(
                           left: 10,

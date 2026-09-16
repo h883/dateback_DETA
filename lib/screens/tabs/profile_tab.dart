@@ -3,6 +3,7 @@ import 'package:flutter/material.dart';
 import '../../api/bloom_api.dart';
 import '../../models/models.dart';
 import '../../theme/bloom_theme.dart';
+import '../../widgets/post_media.dart';
 import '../../widgets/remote_image.dart';
 import '../profile_setup_screen.dart';
 
@@ -217,7 +218,7 @@ class _GridTile extends StatelessWidget {
       child: Stack(
         fit: StackFit.expand,
         children: [
-          RemoteImage(api: api, path: post.mediaPath),
+          PostMedia(api: api, post: post, playVideo: false),
           Positioned(
             right: 8,
             bottom: 7,
