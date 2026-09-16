@@ -4,4 +4,11 @@
          to allow setting breakpoints, to provide hot reload, etc.
     -->
     <uses-permission android:name="android.permission.INTERNET"/>
+
+    <!-- `wrangler dev` をローカルで叩くため、デバッグビルドだけ平文 HTTP を許可する。
+         リリースビルドには入らない。 -->
+    <application
+        android:usesCleartextTraffic="true"
+        tools:replace="android:usesCleartextTraffic"
+        xmlns:tools="http://schemas.android.com/tools"/>
 </manifest>
