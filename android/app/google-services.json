@@ -1,0 +1,39 @@
+{
+  "project_info": {
+    "project_number": "851433910657",
+    "project_id": "nova-hack2026-366bf",
+    "storage_bucket": "nova-hack2026-366bf.firebasestorage.app"
+  },
+  "client": [
+    {
+      "client_info": {
+        "mobilesdk_app_id": "1:851433910657:android:19715acbda373b73447880",
+        "android_client_info": {
+          "package_name": "com.example.snsnovahack"
+        }
+      },
+      "oauth_client": [
+        {
+          "client_id": "851433910657-ob53p007n0ppd6s2d4s691puetdaupmj.apps.googleusercontent.com",
+          "client_type": 3
+        }
+      ],
+      "api_key": [
+        {
+          "current_key": "AIzaSyBYTi0t0sqlrT9gcWCmTyomms0W89AUFos"
+        }
+      ],
+      "services": {
+        "appinvite_service": {
+          "other_platform_oauth_client": [
+            {
+              "client_id": "851433910657-ob53p007n0ppd6s2d4s691puetdaupmj.apps.googleusercontent.com",
+              "client_type": 3
+            }
+          ]
+        }
+      }
+    }
+  ],
+  "configuration_version": "1"
+}

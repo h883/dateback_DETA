@@ -12,13 +12,16 @@ services:
       - .:/workspace
       - flutter-pub-cache:/root/.pub-cache
       - gradle-cache:/root/.gradle
+      - firebase-config:/root/.config
+      - android-sdk:/opt/android-sdk
     environment:
-      ADB_SERVER_SOCKET: tcp:host.docker.internal:5037
-    extra_hosts:
-      - "host.docker.internal:host-gateway"
+      ADB_SERVER_SOCKET: tcp:127.0.0.1:5037
+    network_mode: host
     tty: true
     stdin_open: true
 
 volumes:
   flutter-pub-cache:
   gradle-cache:
+  firebase-config:
+  android-sdk:

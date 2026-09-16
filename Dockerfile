@@ -22,6 +22,7 @@ RUN apt-get update \
         curl \
         file \
         git \
+        gnupg \
         libglu1-mesa \
         libgtk-3-dev \
         liblzma-dev \
@@ -32,7 +33,13 @@ RUN apt-get update \
         wget \
         xz-utils \
         zip \
-    && rm -rf /var/lib/apt/lists/*
+    && mkdir -p /etc/apt/keyrings \
+    && curl -fsSL https://deb.nodesource.com/gpgkey/nodesource-repo.gpg.key | gpg --dearmor -o /etc/apt/keyrings/nodesource.gpg \
+    && echo "deb [signed-by=/etc/apt/keyrings/nodesource.gpg] https://deb.nodesource.com/node_20.x nodistro main" > /etc/apt/sources.list.d/nodesource.list \
+    && apt-get update \
+    && apt-get install -y --no-install-recommends nodejs \
+    && rm -rf /var/lib/apt/lists/* \
+    && npm install -g firebase-tools
 
 RUN git clone --depth 1 --branch "${FLUTTER_VERSION}" https://github.com/flutter/flutter.git "${FLUTTER_HOME}" \
     && flutter config --enable-android --no-analytics \
@@ -51,6 +58,9 @@ RUN mkdir -p "${ANDROID_HOME}/cmdline-tools" \
         "build-tools;${ANDROID_BUILD_TOOLS}" \
     && yes | flutter doctor --android-licenses >/dev/null \
     && flutter doctor
+
+RUN dart pub global activate flutterfire_cli
+ENV PATH="${PATH}:/root/.pub-cache/bin"
 
 WORKDIR /workspace
 
