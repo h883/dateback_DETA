@@ -14,6 +14,7 @@ services:
       - gradle-cache:/root/.gradle
       - firebase-config:/root/.config
       - android-sdk:/opt/android-sdk
+      - android-debug-keystore:/root/.android
     environment:
       ADB_SERVER_SOCKET: tcp:127.0.0.1:5037
     network_mode: host
@@ -25,3 +26,4 @@ volumes:
   gradle-cache:
   firebase-config:
   android-sdk:
+  android-debug-keystore:
