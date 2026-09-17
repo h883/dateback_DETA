@@ -148,9 +148,10 @@ class _ProfileSetupScreenState extends State<ProfileSetupScreen> {
   @override
   Widget build(BuildContext context) {
     final isEdit = widget.initial != null;
+    final colors = context.colors;
 
     return Scaffold(
-      backgroundColor: BloomColors.surface,
+      backgroundColor: colors.surface,
       body: SafeArea(
         child: Form(
           key: _formKey,
@@ -164,23 +165,23 @@ class _ProfileSetupScreenState extends State<ProfileSetupScreen> {
             children: [
               Text(
                 isEdit ? 'プロフィールを編集' : 'プロフィールを設定',
-                style: BloomText.headlineLg,
+                style: BloomText.headlineLg.copyWith(color: colors.onSurface),
               ),
               const SizedBox(height: BloomSpace.sm),
               Text(
                 'フレンドに表示される名前とアイコンです。あとから変更できます。',
-                style: BloomText.bodySm.copyWith(color: BloomColors.secondary),
+                style: BloomText.bodySm.copyWith(color: colors.secondary),
               ),
               const SizedBox(height: BloomSpace.xl),
-              Center(child: _avatarPicker()),
+              Center(child: _avatarPicker(colors)),
               const SizedBox(height: BloomSpace.xl),
-              _label('名前'),
+              _label('名前', colors),
               const SizedBox(height: BloomSpace.sm),
               TextFormField(
                 controller: _username,
-                style: BloomText.bodyLg,
+                style: BloomText.bodyLg.copyWith(color: colors.onSurface),
                 maxLength: 20,
-                decoration: _fieldDecoration('そら'),
+                decoration: _fieldDecoration('そら', colors),
                 validator: (value) {
                   final v = (value ?? '').trim();
                   if (v.isEmpty) return '名前を入力してください';
@@ -188,44 +189,44 @@ class _ProfileSetupScreenState extends State<ProfileSetupScreen> {
                 },
               ),
               const SizedBox(height: BloomSpace.sm),
-              _label('自己紹介'),
+              _label('自己紹介', colors),
               const SizedBox(height: BloomSpace.sm),
               TextFormField(
                 controller: _bio,
-                style: BloomText.bodyMd,
+                style: BloomText.bodyMd.copyWith(color: colors.onSurface),
                 maxLines: 3,
                 maxLength: 160,
-                decoration: _fieldDecoration('静かな写真だけ残す。文章は少なめ。'),
+                decoration: _fieldDecoration('静かな写真だけ残す。文章は少なめ。', colors),
               ),
               if (_error != null) ...[
                 const SizedBox(height: BloomSpace.sm),
                 Text(
                   _error!,
-                  style: BloomText.bodySm.copyWith(color: BloomColors.error),
+                  style: BloomText.bodySm.copyWith(color: colors.error),
                 ),
               ],
               const SizedBox(height: BloomSpace.lg),
               FilledButton(
                 onPressed: _saving ? null : _save,
                 style: FilledButton.styleFrom(
-                  backgroundColor: BloomColors.primaryContainer,
-                  foregroundColor: BloomColors.onPrimaryContainer,
-                  disabledBackgroundColor: BloomColors.surfaceContainerHigh,
+                  backgroundColor: colors.primaryContainer,
+                  foregroundColor: colors.onPrimaryContainer,
+                  disabledBackgroundColor: colors.surfaceContainerHigh,
                   padding: const EdgeInsets.symmetric(vertical: 16),
                   shape: const StadiumBorder(),
                 ),
                 child: _saving
-                    ? const SizedBox.square(
+                    ? SizedBox.square(
                         dimension: 20,
                         child: CircularProgressIndicator(
                           strokeWidth: 2.4,
-                          color: BloomColors.onSurface,
+                          color: colors.onSurface,
                         ),
                       )
                     : Text(
                         isEdit ? '保存する' : 'はじめる',
                         style: BloomText.labelLg.copyWith(
-                          color: BloomColors.onPrimaryContainer,
+                          color: colors.onPrimaryContainer,
                           fontWeight: FontWeight.w700,
                         ),
                       ),
@@ -237,17 +238,18 @@ class _ProfileSetupScreenState extends State<ProfileSetupScreen> {
     );
   }
 
-  Widget _label(String text) => Text(
+  Widget _label(String text, BloomColorsExt colors) => Text(
         text,
-        style: BloomText.labelMd.copyWith(color: BloomColors.onSurfaceVariant),
+        style: BloomText.labelMd.copyWith(color: colors.onSurfaceVariant),
       );
 
-  InputDecoration _fieldDecoration(String hint) => InputDecoration(
+  InputDecoration _fieldDecoration(String hint, BloomColorsExt colors) =>
+      InputDecoration(
         hintText: hint,
-        hintStyle: BloomText.bodyMd.copyWith(color: BloomColors.secondary),
-        counterStyle: BloomText.labelSm.copyWith(color: BloomColors.secondary),
+        hintStyle: BloomText.bodyMd.copyWith(color: colors.secondary),
+        counterStyle: BloomText.labelSm.copyWith(color: colors.secondary),
         filled: true,
-        fillColor: BloomColors.surfaceContainerLow,
+        fillColor: colors.surfaceContainerLow,
         contentPadding: const EdgeInsets.symmetric(horizontal: 14, vertical: 14),
         border: OutlineInputBorder(
           borderRadius: BorderRadius.circular(BloomRadius.md),
@@ -259,12 +261,11 @@ class _ProfileSetupScreenState extends State<ProfileSetupScreen> {
         ),
         focusedBorder: OutlineInputBorder(
           borderRadius: BorderRadius.circular(BloomRadius.md),
-          borderSide:
-              const BorderSide(color: BloomColors.primaryContainer, width: 1.5),
+          borderSide: BorderSide(color: colors.primaryContainer, width: 1.5),
         ),
       );
 
-  Widget _avatarPicker() {
+  Widget _avatarPicker(BloomColorsExt colors) {
     final picked = _pickedAvatar;
     final existing = _existingAvatarPath;
 
@@ -276,18 +277,18 @@ class _ProfileSetupScreenState extends State<ProfileSetupScreen> {
             width: 104,
             height: 104,
             decoration: BoxDecoration(
-              color: BloomColors.surfaceContainerLow,
+              color: colors.surfaceContainerLow,
               shape: BoxShape.circle,
-              border: Border.all(color: BloomColors.outlineVariant),
+              border: Border.all(color: colors.outlineVariant),
             ),
             clipBehavior: Clip.antiAlias,
             child: picked != null
                 ? Image.memory(picked, fit: BoxFit.cover)
                 : existing != null
                     ? RemoteImage(api: widget.api, path: existing)
-                    : const Icon(
+                    : Icon(
                         Icons.add_a_photo_outlined,
-                        color: BloomColors.secondary,
+                        color: colors.secondary,
                         size: 28,
                       ),
           ),
@@ -297,7 +298,7 @@ class _ProfileSetupScreenState extends State<ProfileSetupScreen> {
           onPressed: _pickAvatar,
           child: Text(
             'アイコンを選ぶ',
-            style: BloomText.labelMd.copyWith(color: BloomColors.primary),
+            style: BloomText.labelMd.copyWith(color: colors.primary),
           ),
         ),
       ],
