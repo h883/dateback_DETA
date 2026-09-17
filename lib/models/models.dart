@@ -56,7 +56,9 @@ class Post {
     required this.mediaPath,
     required this.createdAt,
     required this.liked,
+    required this.likeCount,
     this.authorAvatarPath,
+    this.locationLabel,
   });
 
   final String id;
@@ -68,6 +70,13 @@ class Post {
   final DateTime createdAt;
   final bool liked;
 
+  /// この投稿にいいねした人数(B1)。
+  final int likeCount;
+
+  /// 撮影地(粗いエリア名、例: "大阪市 中央区")(B2)。設定でOFFにしていた・
+  /// 位置取得に失敗した場合は null。緯度経度そのものはここに入らない。
+  final String? locationLabel;
+
   factory Post.fromJson(Map<String, dynamic> json) => Post(
         id: json['id'] as String,
         authorUid: json['authorUid'] as String,
@@ -78,9 +87,11 @@ class Post {
         createdAt:
             DateTime.fromMillisecondsSinceEpoch(json['createdAt'] as int),
         liked: json['liked'] as bool? ?? false,
+        likeCount: json['likeCount'] as int? ?? 0,
+        locationLabel: json['locationLabel'] as String?,
       );
 
-  Post copyWith({bool? liked}) => Post(
+  Post copyWith({bool? liked, int? likeCount}) => Post(
         id: id,
         authorUid: authorUid,
         authorName: authorName,
@@ -89,6 +100,8 @@ class Post {
         mediaPath: mediaPath,
         createdAt: createdAt,
         liked: liked ?? this.liked,
+        likeCount: likeCount ?? this.likeCount,
+        locationLabel: locationLabel,
       );
 
   /// デザインのフィルムスタンプ表記（'26 9 16）。

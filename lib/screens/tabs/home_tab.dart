@@ -4,8 +4,11 @@ import '../../api/bloom_api.dart';
 import '../../models/models.dart';
 import '../../proximity/proximity_service.dart';
 import '../../theme/bloom_theme.dart';
+import '../../widgets/film_effects.dart';
 import '../../widgets/post_media.dart';
 import '../../widgets/remote_image.dart';
+import '../../widgets/wordmark.dart';
+import '../friend_add_sheet.dart';
 import '../user_log_overlay.dart';
 
 /// ホーム画面（仕様書 10）。
@@ -16,6 +19,10 @@ import '../user_log_overlay.dart';
 /// - 最上部から下へ引っ張ると近距離の手動検索
 ///
 /// 横フリックは親の PageView が処理するので、ここでは縦だけ拾う。
+///
+/// v15 は全画面共通のトップバーを持たず、Home が自前でヘッダー
+/// （wordmark・フレンド追加・通知ベル）を描画する。フレンド追加は
+/// [showFriendAddSheet] でシートとして開く（独立タブには戻さない）。
 class HomeTab extends StatefulWidget {
   const HomeTab({
     super.key,
@@ -23,6 +30,9 @@ class HomeTab extends StatefulWidget {
     required this.onToast,
     required this.proximity,
     required this.myBeaconId,
+    required this.unreadNotifications,
+    required this.onOpenNotifications,
+    required this.onBleSuccess,
   });
 
   final BloomApi api;
@@ -31,6 +41,14 @@ class HomeTab extends StatefulWidget {
 
   /// 自分の beaconId。未発行なら null。
   final String? myBeaconId;
+
+  /// 通知の未読件数。バッジ表示用（状態自体は MainShell が持つ）。
+  final int unreadNotifications;
+  final VoidCallback onOpenNotifications;
+
+  /// 新しく閲覧可能になった投稿が1件以上増えたときだけ MainShell に伝える。
+  /// 単に近接した・投稿0件増加のときはこれを呼ばず、[onToast] のみ使う。
+  final void Function(String peerName, int newPostCount) onBleSuccess;
 
   @override
   State<HomeTab> createState() => _HomeTabState();
@@ -157,17 +175,40 @@ class _HomeTabState extends State<HomeTab> {
         return;
       }
 
-      var exchanged = false;
+      // 交換前の投稿数を、すでに画面が持っている _authors から控えておく。
+      // 追加の API 通信はしない（フィードは _load() で1回だけ取り直す）。
+      final beforeCounts = <String, int>{
+        for (final a in _authors) a.uid: a.posts.length,
+      };
+
+      final exchangedWith = <({String uid, String name})>[];
       for (final friend in resolved.friends) {
         final result = await widget.api.reportProximity(peerUid: friend.uid);
         if (result.exchanged) {
-          exchanged = true;
-          widget.onToast('${result.peerName}さんとデータを共有しました');
+          exchangedWith.add((
+            uid: friend.uid,
+            name: result.peerName ?? friend.username,
+          ));
         }
       }
+      if (!mounted || exchangedWith.isEmpty) return;
+
+      // 交換したぶん新しく見えるようになった投稿を取り込む(1回だけ)。
+      await _load();
       if (!mounted) return;
-      // 交換したぶん新しく見えるようになった投稿を取り込む。
-      if (exchanged) await _load();
+
+      final afterCounts = <String, int>{
+        for (final a in _authors) a.uid: a.posts.length,
+      };
+      for (final peer in exchangedWith) {
+        final newCount =
+            (afterCounts[peer.uid] ?? 0) - (beforeCounts[peer.uid] ?? 0);
+        if (newCount > 0) {
+          widget.onBleSuccess(peer.name, newCount);
+        } else {
+          widget.onToast('${peer.name}さんとデータを共有しました');
+        }
+      }
     } on BloomApiException catch (e) {
       if (mounted) widget.onToast(e.message);
     } catch (e) {
@@ -189,6 +230,47 @@ class _HomeTabState extends State<HomeTab> {
 
   @override
   Widget build(BuildContext context) {
+    return Column(
+      children: [
+        _header(),
+        Expanded(child: _body()),
+      ],
+    );
+  }
+
+  Widget _header() {
+    return Padding(
+      padding: const EdgeInsets.fromLTRB(18, 6, 14, 6),
+      child: Row(
+        mainAxisAlignment: MainAxisAlignment.spaceBetween,
+        children: [
+          const Wordmark(),
+          Row(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              _RoundActionButton(
+                onTap: () => showFriendAddSheet(
+                  context,
+                  api: widget.api,
+                  proximity: widget.proximity,
+                  onToast: widget.onToast,
+                ),
+                icon: Icons.person_add_alt_1_outlined,
+              ),
+              const SizedBox(width: 5),
+              _RoundActionButton(
+                onTap: widget.onOpenNotifications,
+                icon: Icons.notifications_none,
+                badgeCount: widget.unreadNotifications,
+              ),
+            ],
+          ),
+        ],
+      ),
+    );
+  }
+
+  Widget _body() {
     if (_loading) {
       return const Center(
         child: CircularProgressIndicator(color: BloomColors.primaryContainer),
@@ -285,10 +367,39 @@ class _HomeTabState extends State<HomeTab> {
             RemoteAvatar(api: widget.api, path: author.avatarPath),
             const SizedBox(width: 10),
             Expanded(
-              child: Text(
-                author.username,
-                style: BloomText.bodyLg.copyWith(fontWeight: FontWeight.w700),
-                overflow: TextOverflow.ellipsis,
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  Text(
+                    author.username,
+                    style: BloomText.bodyLg
+                        .copyWith(fontWeight: FontWeight.w700),
+                    overflow: TextOverflow.ellipsis,
+                  ),
+                  if (post?.locationLabel != null) ...[
+                    const SizedBox(height: 2),
+                    Row(
+                      mainAxisSize: MainAxisSize.min,
+                      children: [
+                        const Icon(
+                          Icons.place_outlined,
+                          size: 11,
+                          color: BloomColors.secondary,
+                        ),
+                        const SizedBox(width: 2),
+                        Flexible(
+                          child: Text(
+                            post!.locationLabel!,
+                            style: BloomText.labelSm
+                                .copyWith(color: BloomColors.secondary),
+                            overflow: TextOverflow.ellipsis,
+                          ),
+                        ),
+                      ],
+                    ),
+                  ],
+                ],
               ),
             ),
             IconButton(
@@ -323,7 +434,10 @@ class _HomeTabState extends State<HomeTab> {
                   child: Stack(
                     fit: StackFit.expand,
                     children: [
-                      PostMedia(api: widget.api, post: post),
+                      Film8mmEffects(
+                        active: post.kind.isVideo,
+                        child: PostMedia(api: widget.api, post: post),
+                      ),
                       if (post.kind.isVideo)
                         const Positioned(
                           left: 10,
@@ -423,6 +537,58 @@ class _HomeTabState extends State<HomeTab> {
           ),
         ),
       );
+}
+
+/// v15 の `.round-action`(境界線付きの円形アイコンボタン)。バッジ表示にも対応。
+class _RoundActionButton extends StatelessWidget {
+  const _RoundActionButton({
+    required this.onTap,
+    required this.icon,
+    this.badgeCount = 0,
+  });
+
+  final VoidCallback onTap;
+  final IconData icon;
+  final int badgeCount;
+
+  @override
+  Widget build(BuildContext context) {
+    final colors = context.colors;
+    return GestureDetector(
+      onTap: onTap,
+      behavior: HitTestBehavior.opaque,
+      child: Container(
+        width: 40,
+        height: 40,
+        alignment: Alignment.center,
+        decoration: BoxDecoration(
+          shape: BoxShape.circle,
+          color: colors.surfaceContainerLow,
+          border: Border.all(color: colors.outlineVariant),
+        ),
+        child: Stack(
+          clipBehavior: Clip.none,
+          children: [
+            Icon(icon, size: 20, color: colors.onSurface),
+            if (badgeCount > 0)
+              Positioned(
+                right: -2,
+                top: -2,
+                child: Container(
+                  width: 9,
+                  height: 9,
+                  decoration: BoxDecoration(
+                    shape: BoxShape.circle,
+                    color: colors.primary,
+                    border: Border.all(color: colors.surface, width: 2),
+                  ),
+                ),
+              ),
+          ],
+        ),
+      ),
+    );
+  }
 }
 
 class _KindBadge extends StatelessWidget {

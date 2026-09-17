@@ -4,7 +4,9 @@ import 'package:flutter/services.dart';
 
 import 'api/bloom_api.dart';
 import 'screens/auth_gate.dart';
+import 'settings/settings_store.dart';
 import 'theme/bloom_theme.dart';
+import 'theme/theme_controller.dart';
 import 'firebase_options.dart';
 
 void main() async {
@@ -14,32 +16,62 @@ void main() async {
   // 画面の回転ではなく TiltWatcher（加速度センサー）で扱う。
   await SystemChrome.setPreferredOrientations([DeviceOrientation.portraitUp]);
 
-  // 黒背景に合わせてステータスバーとナビゲーションバーのアイコンを白にする。
-  SystemChrome.setSystemUIOverlayStyle(
-    const SystemUiOverlayStyle(
-      statusBarColor: Colors.transparent,
-      statusBarIconBrightness: Brightness.light,
-      statusBarBrightness: Brightness.dark,
-      systemNavigationBarColor: BloomColors.surface,
-      systemNavigationBarIconBrightness: Brightness.light,
-    ),
+  // システムバーのアイコン色は実際に適用されるテーマの明暗に追従させたいので、
+  // ここでは固定せず BloomApp 側で Theme.of(context).brightness を見て
+  // AnnotatedRegion で都度反映する（OS のライト/ダーク切替にも追従する）。
+
+  final themeController = await ThemeController.load();
+  final settingsStore = await SettingsStore.load();
+  runApp(
+    BloomApp(themeController: themeController, settingsStore: settingsStore),
   );
-  runApp(const BloomApp());
 }
 
 class BloomApp extends StatelessWidget {
-  const BloomApp({super.key});
+  const BloomApp({
+    super.key,
+    required this.themeController,
+    required this.settingsStore,
+  });
+
+  final ThemeController themeController;
+  final SettingsStore settingsStore;
 
   @override
   Widget build(BuildContext context) {
-    final theme = buildBloomTheme();
-    return MaterialApp(
-      title: 'Bloom',
-      debugShowCheckedModeBanner: false,
-      theme: theme,
-      darkTheme: theme,
-      themeMode: ThemeMode.dark,
-      home: AuthGate(api: BloomApi(baseUrl: BloomApi.defaultBaseUrl)),
+    return ListenableBuilder(
+      listenable: themeController,
+      builder: (context, _) {
+        return MaterialApp(
+          title: 'dateback',
+          debugShowCheckedModeBanner: false,
+          theme: buildBloomTheme(brightness: Brightness.light),
+          darkTheme: buildBloomTheme(),
+          themeMode: themeController.mode,
+          builder: (context, child) {
+            final brightness = Theme.of(context).brightness;
+            final isDark = brightness == Brightness.dark;
+            return AnnotatedRegion<SystemUiOverlayStyle>(
+              value: SystemUiOverlayStyle(
+                statusBarColor: Colors.transparent,
+                statusBarIconBrightness:
+                    isDark ? Brightness.light : Brightness.dark,
+                statusBarBrightness: brightness,
+                systemNavigationBarColor:
+                    Theme.of(context).scaffoldBackgroundColor,
+                systemNavigationBarIconBrightness:
+                    isDark ? Brightness.light : Brightness.dark,
+              ),
+              child: child!,
+            );
+          },
+          home: AuthGate(
+            api: BloomApi(baseUrl: BloomApi.defaultBaseUrl),
+            themeController: themeController,
+            settingsStore: settingsStore,
+          ),
+        );
+      },
     );
   }
 }
