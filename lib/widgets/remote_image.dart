@@ -99,7 +99,7 @@ class RemoteAvatar extends StatelessWidget {
       height: size,
       decoration: BoxDecoration(
         shape: BoxShape.circle,
-        border: Border.all(color: BloomColors.outlineVariant),
+        border: Border.all(color: context.colors.outlineVariant),
         gradient: const LinearGradient(
           begin: Alignment.topLeft,
           end: Alignment.bottomRight,
