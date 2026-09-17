@@ -1,5 +1,7 @@
+import 'dart:typed_data';
+
 import 'package:flutter/material.dart';
-import 'package:flutter/services.dart';
+import 'package:http/http.dart' as http;
 import 'package:image_picker/image_picker.dart';
 
 import '../api/bloom_api.dart';
@@ -16,6 +18,7 @@ class ProfileSetupScreen extends StatefulWidget {
     required this.onDone,
     this.initial,
     this.suggestedName,
+    this.suggestedAvatarUrl,
   });
 
   final BloomApi api;
@@ -26,8 +29,11 @@ class ProfileSetupScreen extends StatefulWidget {
   /// 既存プロフィールの編集時に渡す。新規なら null。
   final Profile? initial;
 
-  /// Google アカウントの表示名。初期値の候補に使う。
+  /// Google アカウントの表示名。初期値に使う。
   final String? suggestedName;
+
+  /// Google アカウントのプロフィール写真。初期のアイコンに使う。
+  final String? suggestedAvatarUrl;
 
   @override
   State<ProfileSetupScreen> createState() => _ProfileSetupScreenState();
@@ -47,17 +53,39 @@ class _ProfileSetupScreenState extends State<ProfileSetupScreen> {
   @override
   void initState() {
     super.initState();
+    // Google アカウントの表示名をそのまま初期値にする。日本語も通す。
+    final suggested = (widget.suggestedName ?? '').trim();
     _username = TextEditingController(
-      text: widget.initial?.username ?? _sanitize(widget.suggestedName ?? ''),
+      text: widget.initial?.username ??
+          (suggested.characters.length > 20
+              ? suggested.characters.take(20).toString()
+              : suggested),
     );
     _bio = TextEditingController(text: widget.initial?.bio ?? '');
     _existingAvatarPath = widget.initial?.avatarPath;
+
+    // 新規で自分のアイコンが無ければ、Google の写真を取り込む。
+    if (widget.initial?.avatarPath == null) {
+      _loadGoogleAvatar();
+    }
   }
 
-  /// Google の表示名には空白や記号が入るので、使える文字だけ残す。
-  static String _sanitize(String name) {
-    final cleaned = name.replaceAll(RegExp(r'[^A-Za-z0-9_.\-]'), '');
-    return cleaned.length > 20 ? cleaned.substring(0, 20) : cleaned;
+  /// Google のプロフィール写真を落としてアイコンの初期値にする。
+  /// 失敗しても黙って諦める（本人が選び直せる）。
+  Future<void> _loadGoogleAvatar() async {
+    final url = widget.suggestedAvatarUrl;
+    if (url == null || url.isEmpty) return;
+    try {
+      final res = await http.get(Uri.parse(url));
+      if (res.statusCode != 200 || res.bodyBytes.isEmpty) return;
+      if (!mounted || _pickedAvatar != null) return;
+      setState(() {
+        _pickedAvatar = res.bodyBytes;
+        _pickedAvatarType = res.headers['content-type'] ?? 'image/jpeg';
+      });
+    } catch (_) {
+      // 取れなければアイコン未設定のまま。
+    }
   }
 
   @override
@@ -146,20 +174,16 @@ class _ProfileSetupScreenState extends State<ProfileSetupScreen> {
               const SizedBox(height: BloomSpace.xl),
               Center(child: _avatarPicker()),
               const SizedBox(height: BloomSpace.xl),
-              _label('ユーザー名'),
+              _label('名前'),
               const SizedBox(height: BloomSpace.sm),
               TextFormField(
                 controller: _username,
                 style: BloomText.bodyLg,
-                autocorrect: false,
                 maxLength: 20,
-                inputFormatters: [
-                  FilteringTextInputFormatter.allow(RegExp(r'[A-Za-z0-9_.\-]')),
-                ],
-                decoration: _fieldDecoration('sora'),
+                decoration: _fieldDecoration('そら'),
                 validator: (value) {
                   final v = (value ?? '').trim();
-                  if (v.length < 2) return '2文字以上で入力してください';
+                  if (v.isEmpty) return '名前を入力してください';
                   return null;
                 },
               ),

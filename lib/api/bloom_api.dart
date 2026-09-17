@@ -197,6 +197,26 @@ class BloomApi {
     if (res.statusCode >= 400) _throw(res);
   }
 
+  // ------------------------------------------------------------ 通知
+
+  Future<NotificationFeed> fetchNotifications() async {
+    final res = await _client.get(
+      _uri('/api/notifications'),
+      headers: await _authHeaders(),
+    );
+    return NotificationFeed.fromJson(await _json(res));
+  }
+
+  /// 既読にする。[ids] を省略すると全件。
+  Future<void> markNotificationsRead([List<String>? ids]) async {
+    final res = await _client.post(
+      _uri('/api/notifications/read'),
+      headers: {...await _authHeaders(), 'content-type': 'application/json'},
+      body: jsonEncode({'ids': ?ids}),
+    );
+    if (res.statusCode >= 400) _throw(res);
+  }
+
   // ------------------------------------------------------------ 近距離イベント
 
   /// BLE で拾った beaconId をユーザーに解決する。

@@ -119,6 +119,7 @@ class _AuthGateState extends State<AuthGate> {
           return ProfileSetupScreen(
             api: widget.api,
             suggestedName: user.displayName,
+            suggestedAvatarUrl: user.photoURL,
             onDone: (saved) => setState(() => _profile = saved),
           );
         }

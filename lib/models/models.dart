@@ -204,3 +204,91 @@ class ResolvedPeers {
 
   bool get isEmpty => friends.isEmpty && strangers.isEmpty;
 }
+
+/// アプリ内通知の種別。
+enum NotificationKind {
+  friendRequest('friend_request'),
+  friendAccepted('friend_accepted'),
+  proximity('proximity'),
+  like('like'),
+  unknown('');
+
+  const NotificationKind(this.wire);
+
+  final String wire;
+
+  static NotificationKind fromWire(String value) => values.firstWhere(
+        (k) => k.wire == value,
+        orElse: () => NotificationKind.unknown,
+      );
+}
+
+class AppNotification {
+  const AppNotification({
+    required this.id,
+    required this.kind,
+    required this.read,
+    required this.createdAt,
+    this.actorUid,
+    this.actorName,
+    this.actorAvatarPath,
+    this.postId,
+  });
+
+  final String id;
+  final NotificationKind kind;
+  final bool read;
+  final DateTime createdAt;
+
+  /// きっかけになった相手。退会済みなら名前が null になる。
+  final String? actorUid;
+  final String? actorName;
+  final String? actorAvatarPath;
+  final String? postId;
+
+  factory AppNotification.fromJson(Map<String, dynamic> json) =>
+      AppNotification(
+        id: json['id'] as String,
+        kind: NotificationKind.fromWire(json['kind'] as String),
+        read: json['read'] as bool? ?? false,
+        createdAt:
+            DateTime.fromMillisecondsSinceEpoch(json['createdAt'] as int),
+        actorUid: json['actorUid'] as String?,
+        actorName: json['actorName'] as String?,
+        actorAvatarPath: json['actorAvatarPath'] as String?,
+        postId: json['postId'] as String?,
+      );
+
+  /// 一覧に出す文。相手が消えていても読める文にする。
+  String get message {
+    final who = actorName ?? '相手';
+    return switch (kind) {
+      NotificationKind.friendRequest => '$who さんからフレンド申請が届きました',
+      NotificationKind.friendAccepted => '$who さんとフレンドになりました',
+      NotificationKind.proximity => '$who さんとデータを共有しました',
+      NotificationKind.like => '$who さんが投稿にいいねしました',
+      NotificationKind.unknown => '新しいお知らせがあります',
+    };
+  }
+}
+
+/// 通知一覧と未読件数。
+class NotificationFeed {
+  const NotificationFeed({
+    required this.notifications,
+    required this.unreadCount,
+  });
+
+  final List<AppNotification> notifications;
+  final int unreadCount;
+
+  factory NotificationFeed.fromJson(Map<String, dynamic> json) =>
+      NotificationFeed(
+        unreadCount: json['unreadCount'] as int? ?? 0,
+        notifications: (json['notifications'] as List)
+            .map((e) => AppNotification.fromJson(e as Map<String, dynamic>))
+            .toList(),
+      );
+
+  static const empty = NotificationFeed(notifications: [], unreadCount: 0);
+}
