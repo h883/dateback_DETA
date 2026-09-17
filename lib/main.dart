@@ -10,6 +10,10 @@ import 'firebase_options.dart';
 void main() async {
   WidgetsFlutterBinding.ensureInitialized();
   await Firebase.initializeApp(options: DefaultFirebaseOptions.currentPlatform);
+  // アプリは縦画面固定。横に倒したときの撮影画面への移動は
+  // 画面の回転ではなく TiltWatcher（加速度センサー）で扱う。
+  await SystemChrome.setPreferredOrientations([DeviceOrientation.portraitUp]);
+
   // 黒背景に合わせてステータスバーとナビゲーションバーのアイコンを白にする。
   SystemChrome.setSystemUIOverlayStyle(
     const SystemUiOverlayStyle(
