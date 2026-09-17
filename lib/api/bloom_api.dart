@@ -94,6 +94,17 @@ class BloomApi {
     return Profile.fromJson(await _json(res));
   }
 
+  /// 他ユーザーのプロフィール(uid/username/avatarPath/bio。beaconId 等の
+  /// 内部情報は含まれない)。面識のない相手には `not_visible`(403)が返る
+  /// (`canViewProfile` による既存の可視性制御をそのまま利用)。
+  Future<Profile> fetchUserProfile(String uid) async {
+    final res = await _client.get(
+      _uri('/api/users/$uid'),
+      headers: await _authHeaders(),
+    );
+    return Profile.fromJson(await _json(res));
+  }
+
   // ------------------------------------------------------------ 投稿
 
   /// 撮影したメディアを投稿する。投稿時刻はサーバーが決める。

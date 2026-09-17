@@ -7,6 +7,7 @@ import '../theme/bloom_theme.dart';
 import '../widgets/remote_image.dart';
 import '../widgets/wordmark.dart';
 import 'friend_add_sheet.dart';
+import 'other_profile_screen.dart';
 
 /// フレンド一覧(仕様書 12.2 / v15)。
 ///
@@ -66,11 +67,19 @@ class _FriendsScreenState extends State<FriendsScreen> {
     if (mounted) _load();
   }
 
-  /// 他ユーザーのプロフィール専用画面はまだ無い(今回のフェーズの対象外)。
-  /// 未実装機能を完成済みに見せないよう、既存の onToast プレースホルダで
-  /// 伝える。
-  void _openProfilePlaceholder() {
-    widget.onToast('プロフィール表示は近日対応します');
+  Future<void> _openProfile(String uid) async {
+    await Navigator.of(context).push<void>(
+      MaterialPageRoute(
+        builder: (_) => OtherProfileScreen(
+          api: widget.api,
+          uid: uid,
+          onToast: widget.onToast,
+        ),
+      ),
+    );
+    // フレンド解除は未実装だが、将来解除できるようになったときのために
+    // 戻ってきたら一覧を読み直しておく(現状は無害な no-op に近い)。
+    if (mounted) _load();
   }
 
   @override
@@ -163,7 +172,7 @@ class _FriendsScreenState extends State<FriendsScreen> {
         itemBuilder: (context, i) => _FriendRow(
           api: widget.api,
           friend: _friends[i],
-          onTap: _openProfilePlaceholder,
+          onTap: () => _openProfile(_friends[i].profile.uid),
         ),
       ),
     );
