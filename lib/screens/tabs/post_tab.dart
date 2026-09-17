@@ -686,33 +686,43 @@ class _PostTabState extends State<PostTab> with WidgetsBindingObserver {
   /// 35mm・ライブプレビュー中(撮影確認中でない)だけ、横スワイプで
   /// フィルターを切り替えられるようにする。
   ///
-  /// このエリア内でのドラッグは、開始した瞬間に
-  /// [PostTab.onFilterGestureActive] で MainShell へ知らせ、MainShell 側で
-  /// PageView(Camera ← Home → Profile)の横スワイプ navigation を一時的に
-  /// 止めてもらう(既存のタブ切替ジェスチャーと衝突しないようにするため)。
+  /// [PostTab.onFilterGestureActive] は指が触れた瞬間([Listener]の
+  /// onPointerDown)で呼ぶ。MainShell 側の PageView(Camera ← Home →
+  /// Profile)は `Scrollable` が `NeverScrollableScrollPhysics` を見ると
+  /// 自身のドラッグ用 GestureRecognizer を登録しなくなる(Flutter の
+  /// `ScrollPositionWithSingleContext` が `setCanDrag(physics.
+  /// shouldAcceptUserOffset(...))` で recognizer 自体を外す実装になって
+  /// いるため)。onHorizontalDragStart まで待つと、そのときには既に
+  /// 親 PageView 側の recognizer がこの pointer の gesture arena へ
+  /// 参加してしまっている可能性があるため、より早い pointer down の時点で
+  /// 知らせて PageView 側を無効化しておく。
+  ///
+  /// フィルターの切替判定そのものは、そのまま既存の
+  /// onHorizontalDragUpdate/End(横方向の移動量の閾値判定)を使う。
+  ///
   /// 8mm・撮影確認中・投稿処理中などは対象外にし、その間は普段どおり
-  /// PageView のスワイプへ委ねる。
+  /// PageView のスワイプへ委ねる(このエリア自体をラップしない)。
   Widget _filterSwipeArea(CameraController controller) {
     final preview = _previewFrame(controller);
     if (_mode != PostKind.film35mm || _busy) return preview;
 
-    return GestureDetector(
-      behavior: HitTestBehavior.opaque,
-      onHorizontalDragStart: (_) {
-        _filterDragAccum = 0;
-        widget.onFilterGestureActive(true);
-      },
-      onHorizontalDragUpdate: (details) {
-        _filterDragAccum += details.delta.dx;
-      },
-      onHorizontalDragEnd: (_) {
-        widget.onFilterGestureActive(false);
-        if (_filterDragAccum.abs() > _filterSwipeThreshold) {
-          _changeFilter(_filterDragAccum < 0 ? 1 : -1);
-        }
-      },
-      onHorizontalDragCancel: () => widget.onFilterGestureActive(false),
-      child: preview,
+    return Listener(
+      onPointerDown: (_) => widget.onFilterGestureActive(true),
+      onPointerUp: (_) => widget.onFilterGestureActive(false),
+      onPointerCancel: (_) => widget.onFilterGestureActive(false),
+      child: GestureDetector(
+        behavior: HitTestBehavior.opaque,
+        onHorizontalDragStart: (_) => _filterDragAccum = 0,
+        onHorizontalDragUpdate: (details) {
+          _filterDragAccum += details.delta.dx;
+        },
+        onHorizontalDragEnd: (_) {
+          if (_filterDragAccum.abs() > _filterSwipeThreshold) {
+            _changeFilter(_filterDragAccum < 0 ? 1 : -1);
+          }
+        },
+        child: preview,
+      ),
     );
   }
 
