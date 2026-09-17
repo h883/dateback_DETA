@@ -43,6 +43,8 @@ Camera ← Home → Profile
 - 投稿には撮影日の date burn-in を焼き込んで表示
 - キャプション・コメント・ハッシュタグは無し。リアクションは「いいね」のみ
 - 投稿失敗時は 再試行 / 端末へ永続化した下書き(Draft) / 破棄 を選べる
+- Own Post Viewer では ♥ 件数を表示し、タップすると いいねした人一覧(avatar + username)をシートで見られる
+- Settings の「撮影地を自動で追加」が ON のときだけ、撮影地(市区町村程度の粗い地域名)を投稿に付与できる(緯度経度そのものは送らない)
 
 ### テーマ
 
@@ -71,7 +73,7 @@ Login → Consent / Permissions → Tutorial → Home
 
 | | |
 |---|---|
-| アプリ | Flutter / Dart。現在は **Android が主対象**（iOS 向けの設定は未整備で、iOS 対応は完了していない） |
+| アプリ | Flutter / Dart。現在は **Android が主対象**。iOS は scaffold(`ios/`)があり、位置情報の usage description(`NSLocationWhenInUseUsageDescription`)も追加済みだが、Mac/Xcode・iOS 実機での最終検証はまだ行っていない |
 | 認証 | Firebase Authentication。Google ログイン実装済み、Apple は未実装（UI のみ） |
 | API | Cloudflare Workers（TypeScript） |
 | DB | Cloudflare D1 |
@@ -142,18 +144,28 @@ Docker で Android ビルドを行う場合は [docs/DOCKER.md](docs/DOCKER.md) 
 - 初回起動の Consent / Tutorial フロー
 - 35mm 撮影の 3:2 センタークロップ
 - 8mm 撮影の無音化
+- Own Post Viewer の ♥ 件数表示・いいねした人一覧(B1)
+  - like 件数は Post API のレスポンス(`likeCount`)にそのまま含まれる
+  - ♥ をタップしたときだけ `GET /api/posts/:id/likers` を呼び、一覧(avatar + username)を遅延取得
+  - likers の取得は既存の投稿閲覧権限制御をそのまま利用(投稿を見られる人だけが一覧も見られる)
+- 撮影地(粗い地域名)の自動追加(B2)
+  - Settings「撮影地を自動で追加」が ON のときだけ、35mm・8mm どちらでも撮影のタイミングで位置情報を取得
+  - reverse geocoding で市区町村程度の粗い地域名へ変換してから送信(緯度経度そのものは送信・保存しない)
+  - `Post.locationLabel`(nullable)として保存し、Home・Own Post Viewer に表示
+  - 投稿失敗時の再試行・下書き(Draft)保存でも、撮影時に取得済みの `locationLabel` をそのまま使い、取り直さない
+  - D1 migration `0005_post_location.sql` で `posts.location_label` を追加
+  - Android debug build の最終 merged manifest に位置情報の permission(`ACCESS_FINE_LOCATION`/`ACCESS_COARSE_LOCATION`)が含まれることを確認済み
 
 ### 未実装・既知の制約
 
 - Apple ログイン(UI のみ、実際の認証は未実装)
-- 他ユーザーのプロフィール専用画面
+- 他ユーザーのプロフィール専用画面(いいねした人一覧の行をタップしたときの正式な遷移先も、これが無いためまだ実装できていない)
 - 利用規約・プライバシーポリシーの実 URL
 - アカウント削除の実 API
-- いいねした人の件数・一覧の UI/API(B1)
-- 撮影地(位置情報)機能そのもの(B2)
 - camera プラグインの制約により、物理的な広角・超広角・望遠レンズの正確な列挙・切替は未実装
 - 8mm 動画ファイルそのものの 3:2 クロップ(プレビューのみ 3:2 で、保存ファイルはセンサーのネイティブ比率のまま)
 - 35mm の複数フィルター切替
+- iOS は Mac/Xcode・実機での最終検証待ち(後輩が別ブランチで進めている iOS 対応は、まだこのリポジトリの remote 上では確認できていないため未統合。統合でき次第この節を更新する)
 
 ### 実装済み・実機検証待ち
 
@@ -162,6 +174,9 @@ BLE・端末の傾き検知・権限まわりは実装済みだが、Android 実
 - BLE による実機同士の近接検知・交換
 - 横向きでの Camera 自動起動(傾きの向きの判定)
 - カメラ・Bluetooth・位置情報・通知の権限リクエストの実機挙動
+- 撮影地(B2)の Android 実機での GPS 取得・reverse geocoding
+- 位置情報の権限拒否・GPS/位置情報サービス OFF 時でも投稿・下書きが失敗せず続くこと
+- Home・Own Post Viewer での撮影地表示の実機での見え方
 
 ## 開発者向けドキュメント
 
