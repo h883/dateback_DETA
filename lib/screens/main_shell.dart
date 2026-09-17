@@ -59,6 +59,9 @@ class _MainShellState extends State<MainShell> with WidgetsBindingObserver {
   /// 無駄な往復を減らすため端末側でも直近の相手を覚えておく。
   final _recentlyExchanged = <String, DateTime>{};
 
+  /// 横向きへの切り替わりを一度だけ拾うために、前回の向きを覚えておく。
+  Orientation? _lastOrientation;
+
   /// 画面に出すトースト。仕様書 14 のとおり、どの画面にいても出す。
   String? _toast;
   int _toastToken = 0;
@@ -67,7 +70,31 @@ class _MainShellState extends State<MainShell> with WidgetsBindingObserver {
   void initState() {
     super.initState();
     WidgetsBinding.instance.addObserver(this);
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (mounted) _lastOrientation = _currentOrientation();
+    });
     _startProximity();
+  }
+
+  Orientation _currentOrientation() {
+    final size = View.of(context).physicalSize;
+    return size.width > size.height
+        ? Orientation.landscape
+        : Orientation.portrait;
+  }
+
+  /// 端末を横向きにしたら撮影画面へ移る。
+  /// 縦に戻したときは今いる画面のままにする。
+  @override
+  void didChangeMetrics() {
+    final orientation = _currentOrientation();
+    if (orientation == _lastOrientation) return;
+    _lastOrientation = orientation;
+
+    if (orientation != Orientation.landscape) return;
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (mounted && _tab != ShellTab.post) _goTo(ShellTab.post);
+    });
   }
 
   @override

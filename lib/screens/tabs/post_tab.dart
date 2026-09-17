@@ -215,16 +215,15 @@ class _PostTabState extends State<PostTab> with WidgetsBindingObserver {
 
   @override
   Widget build(BuildContext context) {
-    final isLandscape =
-        MediaQuery.orientationOf(context) == Orientation.landscape;
-
+    // 縦でも横でも撮影できる。横向きにしたときにこの画面へ来る導線は
+    // MainShell 側が持っている。
     return ColoredBox(
       color: const Color(0xFF050608),
-      child: isLandscape ? _cameraStage() : const _RotateGate(),
+      child: _cameraStage(context),
     );
   }
 
-  Widget _cameraStage() {
+  Widget _cameraStage(BuildContext context) {
     final controller = _controller;
     final error = _cameraError;
 
@@ -254,13 +253,31 @@ class _PostTabState extends State<PostTab> with WidgetsBindingObserver {
         else if (_stillPreview != null)
           Image.memory(_stillPreview!, fit: BoxFit.cover)
         else
-          _previewFilter(CameraPreview(controller)),
+          _previewFilter(_fillPreview(context, controller)),
         if (_recording) const _RecordChip(),
         Positioned(top: 14, left: 0, right: 0, child: Center(child: _modeSwitch())),
         Positioned(left: 18, top: 18, child: _copy()),
         Positioned(right: 18, bottom: 18, child: _stamp()),
         Positioned(left: 0, right: 0, bottom: 18, child: Center(child: _controls())),
       ],
+    );
+  }
+
+  /// プレビューを歪めずに画面いっぱいに収める。
+  ///
+  /// CameraPreview はセンサーの縦横比で描くので、縦向きでは画面と比率が合わない。
+  /// 差のぶんだけ拡大して切り落とす（BoxFit.cover と同じ考え方）。
+  Widget _fillPreview(BuildContext context, CameraController controller) {
+    final screen = MediaQuery.sizeOf(context);
+    var scale = screen.aspectRatio * controller.value.aspectRatio;
+    if (scale < 1) scale = 1 / scale;
+
+    return ClipRect(
+      child: Transform.scale(
+        scale: scale,
+        alignment: Alignment.center,
+        child: Center(child: CameraPreview(controller)),
+      ),
     );
   }
 
@@ -446,42 +463,6 @@ class _PostTabState extends State<PostTab> with WidgetsBindingObserver {
             color: isVideo ? const Color(0xFFEE5D64) : const Color(0xFFF3F1EF),
             borderRadius: BorderRadius.circular(isVideo ? 8 : 999),
           ),
-        ),
-      ),
-    );
-  }
-}
-
-/// 縦向きのときの案内（モックの rotate-camera-gate）。
-class _RotateGate extends StatelessWidget {
-  const _RotateGate();
-
-  @override
-  Widget build(BuildContext context) {
-    return Center(
-      child: Padding(
-        padding: const EdgeInsets.all(32),
-        child: Column(
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            const Icon(
-              Icons.screen_rotation,
-              size: 44,
-              color: BloomColors.secondary,
-            ),
-            const SizedBox(height: 14),
-            Text(
-              '横向きにして撮影',
-              style: BloomText.headlineSm,
-              textAlign: TextAlign.center,
-            ),
-            const SizedBox(height: 8),
-            Text(
-              '35mmは写真、8mmは2秒の動画。',
-              style: BloomText.bodySm.copyWith(color: BloomColors.secondary),
-              textAlign: TextAlign.center,
-            ),
-          ],
         ),
       ),
     );
