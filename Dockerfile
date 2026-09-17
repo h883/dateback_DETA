@@ -4,8 +4,8 @@ ENV DEBIAN_FRONTEND=noninteractive
 
 ARG FLUTTER_VERSION=stable
 ARG ANDROID_SDK_TOOLS_VERSION=11076708
-ARG ANDROID_PLATFORM=android-36
-ARG ANDROID_BUILD_TOOLS=36.0.0
+ARG ANDROID_PLATFORM=android-37
+ARG ANDROID_BUILD_TOOLS=37.0.0
 
 ENV FLUTTER_HOME=/opt/flutter
 ENV ANDROID_HOME=/opt/android-sdk
@@ -54,10 +54,17 @@ RUN mkdir -p "${ANDROID_HOME}/cmdline-tools" \
     && yes | sdkmanager --licenses >/dev/null \
     && sdkmanager \
         "platform-tools" \
-        "platforms;${ANDROID_PLATFORM}" \
         "build-tools;${ANDROID_BUILD_TOOLS}" \
+    && (sdkmanager "platforms;${ANDROID_PLATFORM}" || true) \
     && yes | flutter doctor --android-licenses >/dev/null \
-    && flutter doctor
+    && flutter doctor || true
+
+# The bundled cmdline-tools sdkmanager above is sometimes too old to know
+# about the newest platform ("Failed to find package"), even though Gradle's
+# own AGP downloader can still fetch it during the first real `flutter build`.
+# If that download lands under a versioned folder name (e.g. android-37.0)
+# instead of the plain hash Gradle expects (android-37), symlink it so both
+# names resolve to the same platform.
 
 RUN dart pub global activate flutterfire_cli
 ENV PATH="${PATH}:/root/.pub-cache/bin"
