@@ -29,6 +29,18 @@ class BleProximityService implements ProximityService {
   bool _advertising = false;
   String? _currentBeaconId;
 
+  /// dispose() 後は、待機していた非同期処理が復帰しても何もしない。
+  /// 待たずに閉じた StreamController に書き込むとクラッシュするため。
+  bool _disposed = false;
+
+  void _emitStatus(ProximityStatus s) {
+    if (!_disposed) _status.add(s);
+  }
+
+  void _emitPeers(List<NearbyPeer> p) {
+    if (!_disposed) _peers.add(p);
+  }
+
   @override
   Stream<ProximityStatus> get status => _status.stream;
 
@@ -37,23 +49,25 @@ class BleProximityService implements ProximityService {
 
   @override
   Future<void> start({required String myBeaconId}) async {
+    if (_disposed) return;
     if (!await FlutterBluePlus.isSupported) {
-      _status.add(ProximityStatus.unsupported);
+      _emitStatus(ProximityStatus.unsupported);
       return;
     }
     if (!await _ensurePermissions()) {
-      _status.add(ProximityStatus.permissionDenied);
+      _emitStatus(ProximityStatus.permissionDenied);
       return;
     }
+    if (_disposed) return;
 
     _adapterSub ??= FlutterBluePlus.adapterState.listen((state) {
       if (state == BluetoothAdapterState.off) {
-        _status.add(ProximityStatus.bluetoothOff);
+        _emitStatus(ProximityStatus.bluetoothOff);
       }
     });
 
     if (FlutterBluePlus.adapterStateNow == BluetoothAdapterState.off) {
-      _status.add(ProximityStatus.bluetoothOff);
+      _emitStatus(ProximityStatus.bluetoothOff);
       return;
     }
 
@@ -77,9 +91,10 @@ class BleProximityService implements ProximityService {
   /// スキャン結果を乱すことがあるため、スキャンが終わるのを待ってから行う。
   @override
   Future<void> updateBeaconId(String myBeaconId) async {
-    if (_currentBeaconId == myBeaconId) return;
+    if (_disposed || _currentBeaconId == myBeaconId) return;
     final inFlight = _scanInFlight;
     if (inFlight != null) await inFlight;
+    if (_disposed) return;
 
     final restart = _restartAdvertising(myBeaconId);
     _advertiseRestartInFlight = restart;
@@ -137,6 +152,7 @@ class BleProximityService implements ProximityService {
   Future<List<NearbyPeer>> scanOnce({
     Duration timeout = const Duration(seconds: 4),
   }) {
+    if (_disposed) return Future.value(const []);
     final inFlight = _scanInFlight;
     if (inFlight != null) return inFlight;
 
@@ -151,17 +167,19 @@ class BleProximityService implements ProximityService {
   }) async {
     final restarting = _advertiseRestartInFlight;
     if (restarting != null) await restarting;
+    if (_disposed) return const [];
 
     if (FlutterBluePlus.adapterStateNow == BluetoothAdapterState.off) {
-      _status.add(ProximityStatus.bluetoothOff);
+      _emitStatus(ProximityStatus.bluetoothOff);
       return const [];
     }
     if (!await _ensurePermissions()) {
-      _status.add(ProximityStatus.permissionDenied);
+      _emitStatus(ProximityStatus.permissionDenied);
       return const [];
     }
+    if (_disposed) return const [];
 
-    _status.add(ProximityStatus.scanning);
+    _emitStatus(ProximityStatus.scanning);
     final found = <String, NearbyPeer>{};
 
     await _scanSub?.cancel();
@@ -188,13 +206,13 @@ class BleProximityService implements ProximityService {
     } finally {
       await _scanSub?.cancel();
       _scanSub = null;
-      _status.add(ProximityStatus.idle);
+      _emitStatus(ProximityStatus.idle);
     }
 
     final peers = found.values.toList();
     // 0件でも必ず流す。ここを isNotEmpty で絞ると、相手がいなくなったことが
     // 購読側に伝わらず、最後に見つかった相手がずっと「いる」ままになる。
-    _peers.add(peers);
+    _emitPeers(peers);
     return peers;
   }
 
@@ -239,11 +257,12 @@ class BleProximityService implements ProximityService {
       _advertising = false;
     }
     _currentBeaconId = null;
-    _status.add(ProximityStatus.idle);
+    _emitStatus(ProximityStatus.idle);
   }
 
   @override
   void dispose() {
+    _disposed = true;
     _rescanTimer?.cancel();
     _scanSub?.cancel();
     _adapterSub?.cancel();
