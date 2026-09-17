@@ -104,6 +104,7 @@ class _ProfileTabState extends State<ProfileTab> {
   @override
   Widget build(BuildContext context) {
     final profile = widget.profile;
+    final colors = context.colors;
 
     return Column(
       children: [
@@ -111,8 +112,8 @@ class _ProfileTabState extends State<ProfileTab> {
         Expanded(
           child: RefreshIndicator(
             onRefresh: _load,
-            color: BloomColors.primaryContainer,
-            backgroundColor: BloomColors.surfaceContainerHigh,
+            color: colors.primary,
+            backgroundColor: colors.surfaceContainerHigh,
             child: ListView(
               padding: const EdgeInsets.fromLTRB(18, 6, 18, 26),
               children: [
@@ -127,15 +128,17 @@ class _ProfileTabState extends State<ProfileTab> {
                   children: [
                     Text(
                       profile.username,
-                      style: BloomText.headlineMd
-                          .copyWith(fontWeight: FontWeight.w600),
+                      style: BloomText.headlineMd.copyWith(
+                        fontWeight: FontWeight.w600,
+                        color: colors.onSurface,
+                      ),
                     ),
                     if (profile.bio.isNotEmpty) ...[
                       const SizedBox(height: 6),
                       Text(
                         profile.bio,
                         style: BloomText.bodySm
-                            .copyWith(color: BloomColors.secondary),
+                            .copyWith(color: colors.onSurfaceVariant),
                       ),
                     ],
                   ],
@@ -143,27 +146,28 @@ class _ProfileTabState extends State<ProfileTab> {
               ),
               IconButton(
                 onPressed: _edit,
-                icon: const Icon(Icons.edit_outlined,
-                    color: BloomColors.secondary, size: 20),
+                icon: Icon(Icons.edit_outlined,
+                    color: colors.onSurfaceVariant, size: 20),
               ),
             ],
           ),
           const SizedBox(height: 16),
-          const Divider(color: BloomColors.outlineVariant, height: 1),
+          Divider(color: colors.outlineVariant, height: 1),
           const SizedBox(height: 14),
           _rowButton(
+            colors,
             'フレンド ${_friends.length}人',
             onTap: _openFriends,
           ),
           const SizedBox(height: 8),
-          _rowButton('ログアウト', onTap: widget.onSignOut),
+          _rowButton(colors, 'ログアウト', onTap: widget.onSignOut),
           const SizedBox(height: 18),
           if (_loading)
-            const Padding(
-              padding: EdgeInsets.symmetric(vertical: 40),
+            Padding(
+              padding: const EdgeInsets.symmetric(vertical: 40),
               child: Center(
                 child: CircularProgressIndicator(
-                  color: BloomColors.primaryContainer,
+                  color: colors.primary,
                 ),
               ),
             )
@@ -173,8 +177,8 @@ class _ProfileTabState extends State<ProfileTab> {
               child: Center(
                 child: Text(
                   'まだ投稿がありません',
-                  style:
-                      BloomText.bodySm.copyWith(color: BloomColors.secondary),
+                  style: BloomText.bodySm
+                      .copyWith(color: colors.onSurfaceVariant),
                 ),
               ),
             )
@@ -234,7 +238,7 @@ class _ProfileTabState extends State<ProfileTab> {
     );
   }
 
-  Widget _rowButton(String label, {VoidCallback? onTap}) {
+  Widget _rowButton(BloomColorsExt colors, String label, {VoidCallback? onTap}) {
     return GestureDetector(
       onTap: onTap,
       child: Container(
@@ -242,8 +246,8 @@ class _ProfileTabState extends State<ProfileTab> {
         padding: const EdgeInsets.symmetric(horizontal: 13),
         alignment: Alignment.centerLeft,
         decoration: BoxDecoration(
-          color: BloomColors.surfaceContainerLow,
-          border: Border.all(color: BloomColors.outlineVariant),
+          color: colors.surfaceContainerLow,
+          border: Border.all(color: colors.outlineVariant),
           borderRadius: BorderRadius.circular(BloomRadius.base),
         ),
         child: Row(
@@ -251,11 +255,13 @@ class _ProfileTabState extends State<ProfileTab> {
             Expanded(
               child: Text(
                 label,
-                style: BloomText.labelLg.copyWith(fontWeight: FontWeight.w700),
+                style: BloomText.labelLg.copyWith(
+                  fontWeight: FontWeight.w700,
+                  color: colors.onSurface,
+                ),
               ),
             ),
-            const Icon(Icons.chevron_right,
-                size: 18, color: BloomColors.secondary),
+            Icon(Icons.chevron_right, size: 18, color: colors.onSurfaceVariant),
           ],
         ),
       ),
@@ -271,6 +277,7 @@ class _GridTile extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+    final colors = context.colors;
     return ClipRRect(
       borderRadius: BorderRadius.circular(7),
       child: Stack(
@@ -283,7 +290,7 @@ class _GridTile extends StatelessWidget {
             child: Text(
               post.stamp,
               style: BloomText.labelSm.copyWith(
-                color: BloomColors.primaryContainer,
+                color: colors.primary,
                 letterSpacing: 1.2,
               ),
             ),
