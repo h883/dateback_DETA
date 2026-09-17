@@ -18,8 +18,8 @@ class SettingsStore extends ChangeNotifier {
   /// 変わらず使える([MainShell] 側で自動起動の分岐だけをこの値で見る)。
   bool get tiltToCameraEnabled => _tiltToCameraEnabled;
 
-  /// 撮影地を自動で追加。B2(未実装)で実際の位置情報取得と組み合わせる
-  /// 想定の設定値。今回は永続化して後から参照できる基盤だけを用意する。
+  /// 撮影地を自動で追加。ON のときだけ PostTab が撮影時に位置情報を取得し、
+  /// 投稿の `locationLabel` として送る(B2、実装済み)。
   bool get autoLocationEnabled => _autoLocationEnabled;
 
   static Future<SettingsStore> load() async {

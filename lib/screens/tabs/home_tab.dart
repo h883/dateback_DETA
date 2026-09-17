@@ -224,7 +224,7 @@ class _HomeTabState extends State<HomeTab> {
     if (author == null) return;
     showDialog<void>(
       context: context,
-      barrierColor: BloomColors.scrim.withValues(alpha: 0.9),
+      barrierColor: context.colors.scrim.withValues(alpha: 0.9),
       builder: (_) => UserLogOverlay(api: widget.api, author: author),
     );
   }
@@ -246,10 +246,11 @@ class _HomeTabState extends State<HomeTab> {
 
   @override
   Widget build(BuildContext context) {
+    final colors = context.colors;
     return Column(
       children: [
         _header(),
-        Expanded(child: _body()),
+        Expanded(child: _body(colors)),
       ],
     );
   }
@@ -286,14 +287,14 @@ class _HomeTabState extends State<HomeTab> {
     );
   }
 
-  Widget _body() {
+  Widget _body(BloomColorsExt colors) {
     if (_loading) {
-      return const Center(
-        child: CircularProgressIndicator(color: BloomColors.primaryContainer),
+      return Center(
+        child: CircularProgressIndicator(color: colors.primary),
       );
     }
-    if (_loadError != null) return _errorState(_loadError!);
-    if (_authors.isEmpty) return _emptyState();
+    if (_loadError != null) return _errorState(colors, _loadError!);
+    if (_authors.isEmpty) return _emptyState(colors);
 
     return GestureDetector(
       behavior: HitTestBehavior.opaque,
@@ -329,16 +330,16 @@ class _HomeTabState extends State<HomeTab> {
         padding: const EdgeInsets.fromLTRB(18, 14, 18, 18),
         child: Stack(
           children: [
-            Center(child: _card()),
+            Center(child: _card(colors)),
             if (_pull != _PullPhase.idle)
-              Positioned(top: 2, left: 0, right: 0, child: _pullZone()),
+              Positioned(top: 2, left: 0, right: 0, child: _pullZone(colors)),
           ],
         ),
       ),
     );
   }
 
-  Widget _pullZone() {
+  Widget _pullZone(BloomColorsExt colors) {
     final (text, spinning) = switch (_pull) {
       _PullPhase.pulling => ('近くのフレンドを探す', false),
       _PullPhase.ready => ('離して検索', false),
@@ -352,25 +353,25 @@ class _HomeTabState extends State<HomeTab> {
         mainAxisAlignment: MainAxisAlignment.center,
         children: [
           if (spinning) ...[
-            const SizedBox.square(
+            SizedBox.square(
               dimension: 14,
               child: CircularProgressIndicator(
                 strokeWidth: 2,
-                color: BloomColors.primaryContainer,
+                color: colors.primary,
               ),
             ),
             const SizedBox(width: 8),
           ],
           Text(
             text,
-            style: BloomText.bodySm.copyWith(color: BloomColors.secondary),
+            style: BloomText.bodySm.copyWith(color: colors.onSurfaceVariant),
           ),
         ],
       ),
     );
   }
 
-  Widget _card() {
+  Widget _card(BloomColorsExt colors) {
     final author = _author!;
     final post = _post;
 
@@ -396,8 +397,10 @@ class _HomeTabState extends State<HomeTab> {
                   children: [
                     Text(
                       author.username,
-                      style: BloomText.bodyLg
-                          .copyWith(fontWeight: FontWeight.w700),
+                      style: BloomText.bodyLg.copyWith(
+                        fontWeight: FontWeight.w700,
+                        color: colors.onSurface,
+                      ),
                       overflow: TextOverflow.ellipsis,
                     ),
                     if (post?.locationLabel != null) ...[
@@ -405,17 +408,17 @@ class _HomeTabState extends State<HomeTab> {
                       Row(
                         mainAxisSize: MainAxisSize.min,
                         children: [
-                          const Icon(
+                          Icon(
                             Icons.place_outlined,
                             size: 11,
-                            color: BloomColors.secondary,
+                            color: colors.onSurfaceVariant,
                           ),
                           const SizedBox(width: 2),
                           Flexible(
                             child: Text(
                               post!.locationLabel!,
                               style: BloomText.labelSm
-                                  .copyWith(color: BloomColors.secondary),
+                                  .copyWith(color: colors.onSurfaceVariant),
                               overflow: TextOverflow.ellipsis,
                             ),
                           ),
@@ -430,9 +433,11 @@ class _HomeTabState extends State<HomeTab> {
               onPressed: _toggleLike,
               icon: Icon(
                 post?.liked == true ? Icons.favorite : Icons.favorite_border,
+                // liked のハートは brand color として常に同じ赤にする
+                // (light/dark で変える必要が無いので theme には依存させない)。
                 color: post?.liked == true
                     ? BloomColors.heart
-                    : BloomColors.secondary,
+                    : colors.onSurfaceVariant,
                 size: 23,
               ),
             ),
@@ -440,7 +445,7 @@ class _HomeTabState extends State<HomeTab> {
         ),
         const SizedBox(height: 10),
         if (post == null)
-          _noVisiblePosts()
+          _noVisiblePosts(colors)
         else
           GestureDetector(
             onTap: _olderPost,
@@ -451,8 +456,11 @@ class _HomeTabState extends State<HomeTab> {
                 borderRadius: BorderRadius.circular(10),
                 child: Container(
                   decoration: BoxDecoration(
+                    // メディアの背景はフィルムの黒台紙のような役割なので、
+                    // Own Post Viewer 等の他画面と同じく光/暗テーマに
+                    // 関わらず固定にしてある(Quiet Analog の意図的な質感)。
                     color: const Color(0xFF0E1013),
-                    border: Border.all(color: BloomColors.outlineVariant),
+                    border: Border.all(color: colors.outlineVariant),
                     borderRadius: BorderRadius.circular(10),
                   ),
                   child: Stack(
@@ -474,7 +482,7 @@ class _HomeTabState extends State<HomeTab> {
                         child: Text(
                           post.stamp,
                           style: BloomText.labelMd.copyWith(
-                            color: BloomColors.primaryContainer,
+                            color: colors.primary,
                             fontWeight: FontWeight.w700,
                             letterSpacing: 1.6,
                           ),
@@ -490,23 +498,23 @@ class _HomeTabState extends State<HomeTab> {
     );
   }
 
-  Widget _noVisiblePosts() => AspectRatio(
+  Widget _noVisiblePosts(BloomColorsExt colors) => AspectRatio(
         aspectRatio: 3 / 2,
         child: Container(
           decoration: BoxDecoration(
-            color: BloomColors.surfaceContainerLow,
-            border: Border.all(color: BloomColors.outlineVariant),
+            color: colors.surfaceContainerLow,
+            border: Border.all(color: colors.outlineVariant),
             borderRadius: BorderRadius.circular(10),
           ),
           alignment: Alignment.center,
           child: Text(
             'まだ見られる投稿がありません',
-            style: BloomText.bodySm.copyWith(color: BloomColors.secondary),
+            style: BloomText.bodySm.copyWith(color: colors.onSurfaceVariant),
           ),
         ),
       );
 
-  Widget _emptyState() => Center(
+  Widget _emptyState(BloomColorsExt colors) => Center(
         child: Padding(
           padding: const EdgeInsets.symmetric(horizontal: 32),
           child: Column(
@@ -514,13 +522,13 @@ class _HomeTabState extends State<HomeTab> {
             children: [
               Text(
                 'まだ見られる投稿がありません',
-                style: BloomText.headlineSm,
+                style: BloomText.headlineSm.copyWith(color: colors.onSurface),
                 textAlign: TextAlign.center,
               ),
               const SizedBox(height: BloomSpace.sm),
               Text(
                 'フレンドと実際に会うと、その時点までの投稿が見られるようになります。',
-                style: BloomText.bodySm.copyWith(color: BloomColors.secondary),
+                style: BloomText.bodySm.copyWith(color: colors.onSurfaceVariant),
                 textAlign: TextAlign.center,
               ),
               const SizedBox(height: BloomSpace.lg),
@@ -528,8 +536,7 @@ class _HomeTabState extends State<HomeTab> {
                 onPressed: _load,
                 child: Text(
                   '再読み込み',
-                  style:
-                      BloomText.labelMd.copyWith(color: BloomColors.primary),
+                  style: BloomText.labelMd.copyWith(color: colors.primary),
                 ),
               ),
             ],
@@ -537,7 +544,7 @@ class _HomeTabState extends State<HomeTab> {
         ),
       );
 
-  Widget _errorState(String message) => Center(
+  Widget _errorState(BloomColorsExt colors, String message) => Center(
         child: Padding(
           padding: const EdgeInsets.symmetric(horizontal: 32),
           child: Column(
@@ -545,7 +552,7 @@ class _HomeTabState extends State<HomeTab> {
             children: [
               Text(
                 message,
-                style: BloomText.bodySm.copyWith(color: BloomColors.secondary),
+                style: BloomText.bodySm.copyWith(color: colors.onSurfaceVariant),
                 textAlign: TextAlign.center,
               ),
               const SizedBox(height: BloomSpace.md),
@@ -553,8 +560,7 @@ class _HomeTabState extends State<HomeTab> {
                 onPressed: _load,
                 child: Text(
                   '再試行',
-                  style:
-                      BloomText.labelMd.copyWith(color: BloomColors.primary),
+                  style: BloomText.labelMd.copyWith(color: colors.primary),
                 ),
               ),
             ],

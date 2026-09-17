@@ -75,27 +75,29 @@ class _NotificationsScreenState extends State<NotificationsScreen> {
 
   @override
   Widget build(BuildContext context) {
+    final colors = context.colors;
     return Scaffold(
-      backgroundColor: BloomColors.surface,
+      backgroundColor: colors.surface,
       appBar: AppBar(
-        backgroundColor: BloomColors.surface,
-        surfaceTintColor: BloomColors.surface,
-        title: Text('お知らせ', style: BloomText.headlineSm),
-        iconTheme: const IconThemeData(color: BloomColors.onSurface),
+        backgroundColor: colors.surface,
+        surfaceTintColor: colors.surface,
+        title: Text('お知らせ',
+            style: BloomText.headlineSm.copyWith(color: colors.onSurface)),
+        iconTheme: IconThemeData(color: colors.onSurface),
       ),
       body: RefreshIndicator(
         onRefresh: _load,
-        color: BloomColors.primaryContainer,
-        backgroundColor: BloomColors.surfaceContainerHigh,
-        child: _body(),
+        color: colors.primary,
+        backgroundColor: colors.surfaceContainerHigh,
+        child: _body(colors),
       ),
     );
   }
 
-  Widget _body() {
+  Widget _body(BloomColorsExt colors) {
     if (_loading) {
-      return const Center(
-        child: CircularProgressIndicator(color: BloomColors.primaryContainer),
+      return Center(
+        child: CircularProgressIndicator(color: colors.primary),
       );
     }
 
@@ -106,7 +108,7 @@ class _NotificationsScreenState extends State<NotificationsScreen> {
         children: [
           Text(
             error,
-            style: BloomText.bodySm.copyWith(color: BloomColors.secondary),
+            style: BloomText.bodySm.copyWith(color: colors.onSurfaceVariant),
             textAlign: TextAlign.center,
           ),
           const SizedBox(height: BloomSpace.md),
@@ -115,7 +117,7 @@ class _NotificationsScreenState extends State<NotificationsScreen> {
               onPressed: _load,
               child: Text(
                 '再試行',
-                style: BloomText.labelMd.copyWith(color: BloomColors.primary),
+                style: BloomText.labelMd.copyWith(color: colors.primary),
               ),
             ),
           ),
@@ -130,7 +132,7 @@ class _NotificationsScreenState extends State<NotificationsScreen> {
           const SizedBox(height: 80),
           Text(
             'お知らせはまだありません',
-            style: BloomText.bodySm.copyWith(color: BloomColors.secondary),
+            style: BloomText.bodySm.copyWith(color: colors.onSurfaceVariant),
             textAlign: TextAlign.center,
           ),
         ],
@@ -182,6 +184,7 @@ class _NotificationRow extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+    final colors = context.colors;
     final actorUid = item.actorUid;
     final canRespond =
         item.kind == NotificationKind.friendRequest && actorUid != null;
@@ -191,12 +194,12 @@ class _NotificationRow extends StatelessWidget {
       decoration: BoxDecoration(
         // 未読は少し明るくして見分けられるようにする。
         color: item.read
-            ? BloomColors.surfaceContainerLow
-            : BloomColors.surfaceContainerHigh,
+            ? colors.surfaceContainerLow
+            : colors.surfaceContainerHigh,
         border: Border.all(
           color: item.read
-              ? BloomColors.outlineVariant
-              : BloomColors.primaryContainer.withValues(alpha: 0.4),
+              ? colors.outlineVariant
+              : colors.primary.withValues(alpha: 0.4),
         ),
         borderRadius: BorderRadius.circular(BloomRadius.base),
       ),
@@ -209,12 +212,15 @@ class _NotificationRow extends StatelessWidget {
             child: Column(
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
-                Text(item.message, style: BloomText.bodySm),
+                Text(
+                  item.message,
+                  style: BloomText.bodySm.copyWith(color: colors.onSurface),
+                ),
                 const SizedBox(height: 2),
                 Text(
                   _relativeTime(item.createdAt),
                   style: BloomText.labelSm
-                      .copyWith(color: BloomColors.secondary),
+                      .copyWith(color: colors.onSurfaceVariant),
                 ),
                 if (canRespond)
                   _FriendRequestActions(
@@ -230,8 +236,8 @@ class _NotificationRow extends StatelessWidget {
               width: 8,
               height: 8,
               margin: const EdgeInsets.only(left: 8),
-              decoration: const BoxDecoration(
-                color: BloomColors.primaryContainer,
+              decoration: BoxDecoration(
+                color: colors.primary,
                 shape: BoxShape.circle,
               ),
             ),

@@ -73,7 +73,7 @@ Login → Consent / Permissions → Tutorial → Home
 
 | | |
 |---|---|
-| アプリ | Flutter / Dart。現在は **Android が主対象**。iOS は scaffold(`ios/`)があり、位置情報の usage description(`NSLocationWhenInUseUsageDescription`)も追加済みだが、Mac/Xcode・iOS 実機での最終検証はまだ行っていない |
+| アプリ | Flutter / Dart。現在は **Android が主対象**。iOS は scaffold(`ios/`)と最低限の runtime permission(Camera・Bluetooth・Location)の usage description はあるが、Firebase の iOS 設定が未着手のため現状ではビルドしてもログインできない(詳細は下記「未実装・既知の制約」) |
 | 認証 | Firebase Authentication。Google ログイン実装済み、Apple は未実装（UI のみ） |
 | API | Cloudflare Workers（TypeScript） |
 | DB | Cloudflare D1 |
@@ -186,7 +186,13 @@ Docker で Android ビルドを行う場合は [docs/DOCKER.md](docs/DOCKER.md) 
 - アカウント削除の実 API
 - camera プラグインの制約により、物理的な広角・超広角・望遠レンズの正確な列挙・切替は未実装
 - 8mm 動画ファイルそのものの 3:2 クロップ(プレビューのみ 3:2 で、保存ファイルはセンサーのネイティブ比率のまま)
-- iOS は Mac/Xcode・実機での最終検証待ち(後輩が別ブランチで進めている iOS 対応は、まだこのリポジトリの remote 上では確認できていないため未統合。統合でき次第この節を更新する)
+- 閲覧権限の再伝播(仕様書の F-14)。「A→Bへ閲覧可能→BがCに再伝播」のような扱いは仕様として未決定のまま、意図的に未実装
+- iOS: `Info.plist` に Camera / Bluetooth(Always・Peripheral)/ Location の usage description は追加済みだが、
+  - `firebase_options.dart` に iOS 用の `FirebaseOptions` が無く、iOS では `Firebase.initializeApp` が必ず失敗する(`DefaultFirebaseOptions.currentPlatform` が iOS 分岐で明示的に `UnsupportedError` を投げる実装のまま)
+  - `GoogleService-Info.plist` 自体が存在しない
+  - Xcode プロジェクトの Bundle Identifier もまだ `com.example.workspace` のまま
+  - 上記はいずれも Firebase Console 側でのiOSアプリ登録が前提のため、リポジトリ内の値だけでは解決できない
+  - 後輩が別ブランチで進めている iOS 対応も、まだこのリポジトリの remote 上では確認できていないため未統合。統合でき次第この節を更新する
 
 ### 実装済み・実機検証待ち
 

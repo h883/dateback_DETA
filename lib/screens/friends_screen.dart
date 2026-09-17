@@ -77,8 +77,8 @@ class _FriendsScreenState extends State<FriendsScreen> {
         ),
       ),
     );
-    // フレンド解除は未実装だが、将来解除できるようになったときのために
-    // 戻ってきたら一覧を読み直しておく(現状は無害な no-op に近い)。
+    // OtherProfileScreen でフレンド解除が成功しているかもしれないので、
+    // 戻ってきたら一覧を読み直す(何も変わっていなければ無害な no-op)。
     if (mounted) _load();
   }
 
