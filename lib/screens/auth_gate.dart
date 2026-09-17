@@ -331,10 +331,11 @@ class _Splash extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    return const Scaffold(
-      backgroundColor: BloomColors.surface,
+    final colors = context.colors;
+    return Scaffold(
+      backgroundColor: colors.surface,
       body: Center(
-        child: CircularProgressIndicator(color: BloomColors.primaryContainer),
+        child: CircularProgressIndicator(color: colors.primaryContainer),
       ),
     );
   }
@@ -353,8 +354,9 @@ class _ErrorScreen extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+    final colors = context.colors;
     return Scaffold(
-      backgroundColor: BloomColors.surface,
+      backgroundColor: colors.surface,
       body: Center(
         child: Padding(
           padding: const EdgeInsets.symmetric(horizontal: 32),
@@ -363,7 +365,7 @@ class _ErrorScreen extends StatelessWidget {
             children: [
               Text(
                 message,
-                style: BloomText.bodySm.copyWith(color: BloomColors.secondary),
+                style: BloomText.bodySm.copyWith(color: colors.secondary),
                 textAlign: TextAlign.center,
               ),
               const SizedBox(height: BloomSpace.md),
@@ -371,7 +373,7 @@ class _ErrorScreen extends StatelessWidget {
                 onPressed: onRetry,
                 child: Text(
                   '再試行',
-                  style: BloomText.labelMd.copyWith(color: BloomColors.primary),
+                  style: BloomText.labelMd.copyWith(color: colors.primary),
                 ),
               ),
               TextButton(
@@ -379,7 +381,7 @@ class _ErrorScreen extends StatelessWidget {
                 child: Text(
                   'ログアウト',
                   style:
-                      BloomText.labelMd.copyWith(color: BloomColors.secondary),
+                      BloomText.labelMd.copyWith(color: colors.secondary),
                 ),
               ),
             ],

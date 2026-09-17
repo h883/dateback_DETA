@@ -17,8 +17,9 @@ class UserLogOverlay extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+    final colors = context.colors;
     return Dialog.fullscreen(
-      backgroundColor: BloomColors.surface,
+      backgroundColor: colors.surface,
       child: SafeArea(
         child: Column(
           crossAxisAlignment: CrossAxisAlignment.stretch,
@@ -32,14 +33,16 @@ class UserLogOverlay extends StatelessWidget {
                   Expanded(
                     child: Text(
                       author.username,
-                      style:
-                          BloomText.bodyLg.copyWith(fontWeight: FontWeight.w700),
+                      style: BloomText.bodyLg.copyWith(
+                        fontWeight: FontWeight.w700,
+                        color: colors.onSurface,
+                      ),
                       overflow: TextOverflow.ellipsis,
                     ),
                   ),
                   IconButton(
                     onPressed: () => Navigator.of(context).pop(),
-                    icon: const Icon(Icons.close, color: BloomColors.secondary),
+                    icon: Icon(Icons.close, color: colors.secondary),
                   ),
                 ],
               ),
@@ -70,14 +73,17 @@ class _LogItem extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+    final colors = context.colors;
     return AspectRatio(
       aspectRatio: 3 / 2,
       child: ClipRRect(
         borderRadius: BorderRadius.circular(10),
         child: Container(
           decoration: BoxDecoration(
+            // メディアの背景は他画面と同じく光/暗テーマに関わらず固定
+            // (Quiet Analog のフィルム台紙の質感)。
             color: const Color(0xFF0E1013),
-            border: Border.all(color: BloomColors.outlineVariant),
+            border: Border.all(color: colors.outlineVariant),
             borderRadius: BorderRadius.circular(10),
           ),
           child: Stack(
@@ -93,7 +99,7 @@ class _LogItem extends StatelessWidget {
                 child: Text(
                   post.stamp,
                   style: BloomText.labelMd.copyWith(
-                    color: BloomColors.primaryContainer,
+                    color: colors.primary,
                     fontWeight: FontWeight.w700,
                     letterSpacing: 1.6,
                   ),

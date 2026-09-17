@@ -635,6 +635,7 @@ class _MainShellState extends State<MainShell> with WidgetsBindingObserver {
   }
 
   Widget _bottomNav() {
+    final colors = context.colors;
     return Container(
       padding: EdgeInsets.fromLTRB(
         12,
@@ -642,9 +643,9 @@ class _MainShellState extends State<MainShell> with WidgetsBindingObserver {
         12,
         9 + MediaQuery.paddingOf(context).bottom,
       ),
-      decoration: const BoxDecoration(
-        color: BloomColors.surfaceContainerLow,
-        border: Border(top: BorderSide(color: BloomColors.outlineVariant)),
+      decoration: BoxDecoration(
+        color: colors.surfaceContainerLow,
+        border: Border(top: BorderSide(color: colors.outlineVariant)),
       ),
       child: Row(
         children: [
@@ -688,14 +689,15 @@ class _NavButton extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    final color = active ? BloomColors.onSurface : BloomColors.secondary;
+    final colors = context.colors;
+    final color = active ? colors.onSurface : colors.secondary;
     return GestureDetector(
       onTap: onTap,
       behavior: HitTestBehavior.opaque,
       child: Container(
         padding: const EdgeInsets.symmetric(vertical: 8),
         decoration: BoxDecoration(
-          color: active ? BloomColors.surfaceContainerHigh : null,
+          color: active ? colors.surfaceContainerHigh : null,
           borderRadius: BorderRadius.circular(BloomRadius.base),
         ),
         child: Column(
@@ -707,15 +709,15 @@ class _NavButton extends StatelessWidget {
               decoration: BoxDecoration(
                 border: Border.all(
                   color: active
-                      ? BloomColors.primaryContainer
-                      : BloomColors.outlineVariant,
+                      ? colors.primaryContainer
+                      : colors.outlineVariant,
                 ),
                 borderRadius: BorderRadius.circular(7),
               ),
               child: Icon(
                 active ? _filledIcons[tab] : _outlinedIcons[tab],
                 size: 14,
-                color: active ? BloomColors.primaryContainer : color,
+                color: active ? colors.primaryContainer : color,
               ),
             ),
             const SizedBox(height: 5),
@@ -740,14 +742,15 @@ class _ToastBubble extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+    final colors = context.colors;
     return Container(
       padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 9),
       decoration: BoxDecoration(
-        color: BloomColors.surfaceContainerHigh,
-        border: Border.all(color: BloomColors.outlineVariant),
+        color: colors.surfaceContainerHigh,
+        border: Border.all(color: colors.outlineVariant),
         borderRadius: BorderRadius.circular(9),
       ),
-      child: Text(message, style: BloomText.bodySm),
+      child: Text(message, style: BloomText.bodySm.copyWith(color: colors.onSurface)),
     );
   }
 }
