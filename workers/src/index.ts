@@ -288,7 +288,8 @@ export default {
 function corsHeaders(): Record<string, string> {
   return {
     'access-control-allow-origin': '*',
-    'access-control-allow-headers': 'authorization,content-type,x-post-kind',
+    'access-control-allow-headers':
+      'authorization,content-type,x-post-kind,x-location-label',
     'access-control-allow-methods': 'GET,POST,PUT,DELETE,OPTIONS',
   };
 }
