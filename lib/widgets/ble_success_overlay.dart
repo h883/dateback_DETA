@@ -35,17 +35,18 @@ class _BleSuccessOverlayState extends State<BleSuccessOverlay>
 
   @override
   Widget build(BuildContext context) {
+    final colors = context.colors;
     return IgnorePointer(
       child: Container(
-        color: BloomColors.scrim.withValues(alpha: 0.52),
+        color: colors.scrim.withValues(alpha: 0.52),
         alignment: Alignment.center,
         child: Container(
           width: 240,
           padding: const EdgeInsets.all(22),
           decoration: BoxDecoration(
-            color: BloomColors.surfaceContainerLow,
+            color: colors.surfaceContainerLow,
             borderRadius: BorderRadius.circular(BloomRadius.lg),
-            border: Border.all(color: BloomColors.outlineVariant),
+            border: Border.all(color: colors.outlineVariant),
           ),
           child: Column(
             mainAxisSize: MainAxisSize.min,
@@ -62,11 +63,11 @@ class _BleSuccessOverlayState extends State<BleSuccessOverlay>
                       children: [
                         Transform.translate(
                           offset: Offset(-24 + dx, 0),
-                          child: const _MeetDot(),
+                          child: _MeetDot(color: colors.onSurface),
                         ),
                         Transform.translate(
                           offset: Offset(24 - dx, 0),
-                          child: const _MeetDot(),
+                          child: _MeetDot(color: colors.onSurface),
                         ),
                       ],
                     );
@@ -76,13 +77,16 @@ class _BleSuccessOverlayState extends State<BleSuccessOverlay>
               const SizedBox(height: 6),
               Text(
                 '${widget.peerName}と交換しました',
-                style: BloomText.labelLg.copyWith(fontWeight: FontWeight.w700),
+                style: BloomText.labelLg.copyWith(
+                  fontWeight: FontWeight.w700,
+                  color: colors.onSurface,
+                ),
                 textAlign: TextAlign.center,
               ),
               const SizedBox(height: 5),
               Text(
                 '新しい投稿が${widget.newPostCount}件増えました',
-                style: BloomText.labelSm.copyWith(color: BloomColors.secondary),
+                style: BloomText.labelSm.copyWith(color: colors.secondary),
                 textAlign: TextAlign.center,
               ),
             ],
@@ -94,7 +98,9 @@ class _BleSuccessOverlayState extends State<BleSuccessOverlay>
 }
 
 class _MeetDot extends StatelessWidget {
-  const _MeetDot();
+  const _MeetDot({required this.color});
+
+  final Color color;
 
   @override
   Widget build(BuildContext context) {
@@ -103,7 +109,7 @@ class _MeetDot extends StatelessWidget {
       height: 18,
       decoration: BoxDecoration(
         shape: BoxShape.circle,
-        border: Border.all(color: BloomColors.onSurface, width: 1.5),
+        border: Border.all(color: color, width: 1.5),
       ),
     );
   }
