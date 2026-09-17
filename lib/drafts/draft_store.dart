@@ -78,8 +78,21 @@ class DraftStore {
 
   File _manifestFile(Directory dir) => File('${dir.path}/manifest.json');
 
-  /// 保存済みの下書き一覧。読めない・壊れている場合は空扱いにする
-  /// (下書きが読めないだけでアプリ起動を止めたくない)。
+  /// [draft] のメディア実体への絶対パス。サムネイル表示・再投稿の
+  /// どちらもこれを経由する(パスの組み立て方をここ1箇所にまとめる)。
+  Future<File> mediaFile(PostDraft draft) async {
+    final dir = await _draftsDir();
+    return File('${dir.path}/${draft.fileName}');
+  }
+
+  /// 保存済みの下書き一覧(新しい順)。
+  ///
+  /// マニフェスト全体が読めない・壊れている場合は空扱いにする(下書きが
+  /// 読めないだけでアプリ起動を止めたくない)。マニフェスト自体は読めても
+  /// 一部の entry だけが壊れている(必須フィールド欠落・型不正)場合や、
+  /// entry はあるのに対応するメディアファイルが無い場合は、その entry
+  /// だけを無視して残りは正常に返す(マニフェストは書き換えない。読み込み
+  /// のたびに正常な下書きを勝手に消さないため)。
   Future<List<PostDraft>> loadAll() async {
     try {
       final dir = await _draftsDir();
@@ -88,9 +101,23 @@ class DraftStore {
       final raw = await file.readAsString();
       if (raw.trim().isEmpty) return const [];
       final json = jsonDecode(raw) as Map<String, dynamic>;
-      final list = (json['drafts'] as List? ?? const [])
-          .cast<Map<String, dynamic>>();
-      return list.map(PostDraft.fromJson).toList();
+      final rawList = json['drafts'] as List? ?? const [];
+
+      final drafts = <PostDraft>[];
+      for (final entry in rawList) {
+        try {
+          if (entry is! Map<String, dynamic>) continue;
+          final draft = PostDraft.fromJson(entry);
+          if (!await File('${dir.path}/${draft.fileName}').exists()) {
+            continue; // メディアが無い壊れた entry。この1件だけ無視する。
+          }
+          drafts.add(draft);
+        } catch (_) {
+          // この entry だけ壊れている(欠落フィールド等)。他へは影響させない。
+        }
+      }
+      drafts.sort((a, b) => b.createdAt.compareTo(a.createdAt));
+      return drafts;
     } catch (_) {
       return const [];
     }

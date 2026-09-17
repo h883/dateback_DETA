@@ -8,9 +8,11 @@ import 'package:flutter/material.dart';
 import 'package:image/image.dart' as img;
 
 import '../../api/bloom_api.dart';
+import '../../drafts/draft_store.dart';
 import '../../models/models.dart';
 import '../../theme/bloom_theme.dart';
 import '../../widgets/film_effects.dart';
+import '../drafts_sheet.dart';
 
 /// 投稿処理の結果。MainShell はこれを見て Home への遷移・成功/失敗の
 /// バナー表示・(失敗時の)再試行/下書き保存を行う。
@@ -92,6 +94,7 @@ class PostTab extends StatefulWidget {
     required this.onHome,
     required this.onBusyChanged,
     required this.onCaptureLocation,
+    required this.active,
   });
 
   final BloomApi api;
@@ -113,6 +116,11 @@ class PostTab extends StatefulWidget {
   /// 自体は「呼ばれたら試みる」だけ。OFF のときは呼び出し元が最初から
   /// `Future.value(null)` を返すので、ここでは何も分岐しない。
   final Future<String?> Function() onCaptureLocation;
+
+  /// Camera タブが現在表示中かどうか(MainShell の現在タブを反映するだけの
+  /// 単純な bool)。下書き件数を「Camera 再表示」のタイミングで読み直す
+  /// ためだけに使う。
+  final bool active;
 
   @override
   State<PostTab> createState() => _PostTabState();
@@ -154,6 +162,10 @@ class _PostTabState extends State<PostTab> with WidgetsBindingObserver {
   /// タイミングでこれを待つ。
   Future<String?>? _locationFuture;
 
+  /// Camera の下書きアイコンに出す件数。0件なら [_leftTools] 側で
+  /// アイコン自体を出さない。
+  int _draftCount = 0;
+
   FlashMode _flashMode = FlashMode.off;
 
   int _timerIndex = 0;
@@ -171,6 +183,32 @@ class _PostTabState extends State<PostTab> with WidgetsBindingObserver {
     super.initState();
     WidgetsBinding.instance.addObserver(this);
     _setUpCamera();
+    _reloadDraftCount();
+  }
+
+  @override
+  void didUpdateWidget(covariant PostTab oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    // Camera タブへ戻ってきたタイミングで下書き件数を読み直す
+    // (保存・投稿・削除は他画面で起きるため、ここでしか気づけない)。
+    if (!oldWidget.active && widget.active) {
+      _reloadDraftCount();
+    }
+  }
+
+  Future<void> _reloadDraftCount() async {
+    final drafts = await DraftStore.instance.loadAll();
+    if (!mounted) return;
+    setState(() => _draftCount = drafts.length);
+  }
+
+  void _openDrafts() {
+    showDraftsSheet(
+      context,
+      api: widget.api,
+      onPostResult: widget.onPostResult,
+      onChanged: _reloadDraftCount,
+    );
   }
 
   @override
@@ -740,6 +778,15 @@ class _PostTabState extends State<PostTab> with WidgetsBindingObserver {
             onTap: _cycleTimer,
             badge: _timerSeconds == 0 ? 'off' : '$_timerSeconds',
           ),
+          // 下書きが無いときは、控えめであっても常時ここへ出さない。
+          if (_draftCount > 0) ...[
+            const SizedBox(height: 10),
+            _toolChip(
+              icon: Icons.folder_outlined,
+              onTap: _openDrafts,
+              badge: '$_draftCount',
+            ),
+          ],
         ],
       ),
     );
