@@ -20,6 +20,11 @@ export interface Env {
 /** 仕様書 6.3。同じ相手とこの時間内は新しい近距離イベントとして扱わない。 */
 const PROXIMITY_COOLDOWN_MS = 60_000;
 
+// この時間以内に近接確認済みのフレンドは「まだ近くにいるはず」とみなし、
+// 新しい投稿を次のBLE検知を待たずに即座に見せる（BLEの検知間隔＋
+// クールダウン分のタイムラグを、投稿直後のその場共有では感じさせないため）。
+const RECENT_CONTACT_WINDOW_MS = 3 * 60 * 1000;
+
 const MAX_MEDIA_BYTES = 25 * 1024 * 1024;
 const MAX_AVATAR_BYTES = 4 * 1024 * 1024;
 
@@ -507,6 +512,15 @@ async function handlePosts(
             VALUES (?, ?, ?, ?, ?, ?)`,
     )
       .bind(id, user.uid, kind, key, contentType, createdAt)
+      .run();
+
+    // 直近で近接確認済み（＝まだ近くにいるはず）のフレンドには、
+    // 次のBLE検知・クールダウンを待たせずこの投稿をすぐ見せる。
+    await env.DB.prepare(
+      `UPDATE view_permissions SET visible_until = ?, updated_at = ?
+        WHERE author_uid = ? AND visible_until >= ?`,
+    )
+      .bind(createdAt, createdAt, user.uid, createdAt - RECENT_CONTACT_WINDOW_MS)
       .run();
 
     return json({ id, kind, mediaPath: `/api/media/${key}`, createdAt }, 201);
