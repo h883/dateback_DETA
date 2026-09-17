@@ -122,6 +122,33 @@ function toPost(row: PostRow) {
 }
 
 /**
+ * プロフィール（アイコン・名前・自己紹介）を見せていい相手かどうか。
+ * フレンド、または一度でも近距離ですれ違ったことがある相手だけ許可する。
+ * 面識のない人からは見えないようにする。
+ */
+async function canViewProfile(
+  env: Env,
+  viewerUid: string,
+  targetUid: string,
+): Promise<boolean> {
+  if (viewerUid === targetUid) return true;
+
+  const row = await env.DB.prepare(
+    `SELECT 1 AS ok WHERE EXISTS (
+        SELECT 1 FROM friendships
+         WHERE status = 'accepted'
+           AND ((requester = ?1 AND addressee = ?2) OR (requester = ?2 AND addressee = ?1))
+      ) OR EXISTS (
+        SELECT 1 FROM proximity_events
+         WHERE (uid_a = ?1 AND uid_b = ?2) OR (uid_a = ?2 AND uid_b = ?1)
+      )`,
+  )
+    .bind(viewerUid, targetUid)
+    .first<{ ok: number }>();
+  return !!row;
+}
+
+/**
  * 閲覧可能な投稿を引くための共通 SQL 片。
  * 自分の投稿は常に見える。他人の投稿は view_permissions に行があり、
  * かつ投稿時刻が visible_until 以前のものだけ。
@@ -260,7 +287,7 @@ async function route(
         : fail(405, 'method_not_allowed', method);
     case 'media':
       return method === 'GET'
-        ? handleMedia(rest.join('/'), env)
+        ? handleMedia(rest.join('/'), env, user)
         : fail(405, 'method_not_allowed', method);
     default:
       return fail(404, 'not_found', url.pathname);
@@ -384,26 +411,7 @@ async function handleUsers(
   user: VerifiedUser,
 ): Promise<Response> {
   if (method !== 'GET') return fail(405, 'method_not_allowed', method);
-
-  // 仕様書 7.2 フレンド追加モードの候補。
-  // BLE が未実装の間は「自分ともフレンドでもない既存ユーザー」を候補として返す。
-  if (rest[0] === 'nearby' || rest.length === 0) {
-    const { results } = await env.DB.prepare(
-      `SELECT u.uid, u.username, u.bio, u.avatar_key
-         FROM users u
-        WHERE u.uid <> ?1
-          AND NOT EXISTS (
-                SELECT 1 FROM friendships f
-                 WHERE (f.requester = ?1 AND f.addressee = u.uid)
-                    OR (f.requester = u.uid AND f.addressee = ?1)
-              )
-        ORDER BY u.updated_at DESC
-        LIMIT 20`,
-    )
-      .bind(user.uid)
-      .all<UserRow>();
-    return json({ users: results.map(toProfile) });
-  }
+  if (rest.length === 0) return fail(404, 'not_found', '');
 
   const uid = rest[0];
 
@@ -417,6 +425,10 @@ async function handleUsers(
   }
 
   if (rest.length === 1) {
+    // 面識のない相手のプロフィールは見せない。
+    if (!(await canViewProfile(env, user.uid, uid))) {
+      return fail(403, 'not_visible', 'このプロフィールは閲覧できません');
+    }
     const row = await env.DB.prepare(
       'SELECT uid, username, bio, avatar_key FROM users WHERE uid = ?',
     )
@@ -937,8 +949,28 @@ async function handleNotifications(
 
 // ---------------------------------------------------------------- /api/media
 
-async function handleMedia(key: string, env: Env): Promise<Response> {
+async function handleMedia(
+  key: string,
+  env: Env,
+  user: VerifiedUser,
+): Promise<Response> {
   if (!key) return fail(404, 'not_found', 'No key');
+
+  // キーの形式は avatars/{uid}/... か posts/{uid}/{id}。
+  // どちらも「所有者」が分かるので、URL を知っているだけでは見せない。
+  const [kind, ownerUid] = key.split('/');
+  if (kind === 'avatars') {
+    if (ownerUid && !(await canViewProfile(env, user.uid, ownerUid))) {
+      return fail(403, 'not_visible', 'この画像は閲覧できません');
+    }
+  } else if (kind === 'posts') {
+    const post = await env.DB.prepare(
+      `${VISIBLE_POSTS_SQL} AND p.media_key = ?2`,
+    )
+      .bind(user.uid, key)
+      .first<{ id: string }>();
+    if (!post) return fail(403, 'not_visible', 'この投稿は閲覧できません');
+  }
 
   const { value, metadata } = await env.MEDIA.getWithMetadata<{
     contentType?: string;

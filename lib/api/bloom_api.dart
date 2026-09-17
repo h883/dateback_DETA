@@ -152,16 +152,6 @@ class BloomApi {
         .toList();
   }
 
-  /// 近くの未フレンドユーザー候補（仕様書 7.2 フレンド追加モード）。
-  Future<List<Profile>> fetchNearbyUsers() async {
-    final res =
-        await _client.get(_uri('/api/users/nearby'), headers: await _authHeaders());
-    final body = await _json(res);
-    return (body['users'] as List)
-        .map((e) => Profile.fromJson(e as Map<String, dynamic>))
-        .toList();
-  }
-
   Future<FriendRequests> fetchFriendRequests() async {
     final res = await _client.get(
       _uri('/api/friends/requests'),
