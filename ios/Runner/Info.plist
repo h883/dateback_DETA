@@ -26,6 +26,12 @@
 	<string>$(FLUTTER_BUILD_NUMBER)</string>
 	<key>LSRequiresIPhoneOS</key>
 	<true/>
+	<key>NSBluetoothAlwaysUsageDescription</key>
+	<string>近くの友達を検知するために使います</string>
+	<key>NSBluetoothPeripheralUsageDescription</key>
+	<string>近くの友達に自分を検知してもらうために使います</string>
+	<key>NSCameraUsageDescription</key>
+	<string>写真・8mm動画の撮影に使います</string>
 	<key>NSLocationWhenInUseUsageDescription</key>
 	<string>近くの友達を探すことや、投稿に撮影地を追加するために使います</string>
 	<key>UIApplicationSceneManifest</key>
