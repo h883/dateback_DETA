@@ -72,6 +72,10 @@ class _MainShellState extends State<MainShell> with WidgetsBindingObserver {
   int _unreadCount = 0;
   Timer? _unreadTimer;
 
+  /// beaconId はサーバー側で2分ごとにローテーションされる（盗聴対策）。
+  /// ローテーション周期より十分短い間隔で追従し、広告を出し直す。
+  Timer? _beaconRefreshTimer;
+
   /// 画面に出すトースト。仕様書 14 のとおり、どの画面にいても出す。
   String? _toast;
   int _toastToken = 0;
@@ -89,6 +93,25 @@ class _MainShellState extends State<MainShell> with WidgetsBindingObserver {
       const Duration(seconds: 30),
       (_) => _refreshUnread(),
     );
+    _beaconRefreshTimer = Timer.periodic(
+      const Duration(seconds: 60),
+      (_) => _refreshBeaconId(),
+    );
+  }
+
+  /// サーバーの beaconId ローテーションに追従し、広告中の値を更新する。
+  Future<void> _refreshBeaconId() async {
+    try {
+      final profile = await widget.api.fetchMyProfile();
+      final newBeaconId = profile?.beaconId;
+      if (!mounted || profile == null || newBeaconId == null) return;
+      if (newBeaconId != widget.profile.beaconId) {
+        widget.onProfileChanged(profile);
+        await _proximity.updateBeaconId(newBeaconId);
+      }
+    } catch (_) {
+      // 取れなくても次の周期でやり直す。
+    }
   }
 
   Future<void> _refreshUnread() async {
@@ -138,6 +161,7 @@ class _MainShellState extends State<MainShell> with WidgetsBindingObserver {
     _tiltSub?.cancel();
     _tilt.dispose();
     _unreadTimer?.cancel();
+    _beaconRefreshTimer?.cancel();
     _peerSub?.cancel();
     _proximity.dispose();
     _pager.dispose();

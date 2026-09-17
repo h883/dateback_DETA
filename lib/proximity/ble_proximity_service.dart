@@ -27,6 +27,7 @@ class BleProximityService implements ProximityService {
   StreamSubscription<BluetoothAdapterState>? _adapterSub;
   Timer? _rescanTimer;
   bool _advertising = false;
+  String? _currentBeaconId;
 
   @override
   Stream<ProximityStatus> get status => _status.stream;
@@ -66,9 +67,42 @@ class BleProximityService implements ProximityService {
     unawaited(scanOnce());
   }
 
+  /// 広告の停止・再開が進行中かどうか。スキャン開始側もこれを待つ。
+  Future<void>? _advertiseRestartInFlight;
+
+  /// サーバー側で beaconId がローテーションされたら、広告を新しい値で
+  /// 出し直す。盗聴された旧IDをいつまでも送り続けないようにするため。
+  ///
+  /// アドバタイズの停止・再開は Bluetooth スタック全体に影響し、進行中の
+  /// スキャン結果を乱すことがあるため、スキャンが終わるのを待ってから行う。
+  @override
+  Future<void> updateBeaconId(String myBeaconId) async {
+    if (_currentBeaconId == myBeaconId) return;
+    final inFlight = _scanInFlight;
+    if (inFlight != null) await inFlight;
+
+    final restart = _restartAdvertising(myBeaconId);
+    _advertiseRestartInFlight = restart;
+    await restart;
+    _advertiseRestartInFlight = null;
+  }
+
+  Future<void> _restartAdvertising(String myBeaconId) async {
+    if (_advertising) {
+      try {
+        await _peripheral.stop();
+      } catch (_) {
+        // 既に止まっている。
+      }
+      _advertising = false;
+    }
+    await _advertise(myBeaconId);
+  }
+
   /// beaconId を製造者データに載せて広告する。
   Future<void> _advertise(String myBeaconId) async {
     if (_advertising) return;
+    _currentBeaconId = myBeaconId;
     try {
       await _peripheral.start(
         advertiseData: AdvertiseDataCore(
@@ -93,10 +127,31 @@ class BleProximityService implements ProximityService {
     }
   }
 
+  /// 進行中のスキャン。バックグラウンドの定期スキャンと、フレンド追加画面
+  /// の手動スキャンが同じインスタンスを共有しているため、同時に
+  /// FlutterBluePlus.startScan() を叩き合うと _scanSub の奪い合いになり
+  /// 検知が不安定になる。進行中なら新しく始めず、それに相乗りする。
+  Future<List<NearbyPeer>>? _scanInFlight;
+
   @override
   Future<List<NearbyPeer>> scanOnce({
     Duration timeout = const Duration(seconds: 4),
+  }) {
+    final inFlight = _scanInFlight;
+    if (inFlight != null) return inFlight;
+
+    final future = _scanOnceImpl(timeout: timeout);
+    _scanInFlight = future;
+    future.whenComplete(() => _scanInFlight = null);
+    return future;
+  }
+
+  Future<List<NearbyPeer>> _scanOnceImpl({
+    Duration timeout = const Duration(seconds: 4),
   }) async {
+    final restarting = _advertiseRestartInFlight;
+    if (restarting != null) await restarting;
+
     if (FlutterBluePlus.adapterStateNow == BluetoothAdapterState.off) {
       _status.add(ProximityStatus.bluetoothOff);
       return const [];
@@ -183,6 +238,7 @@ class BleProximityService implements ProximityService {
       }
       _advertising = false;
     }
+    _currentBeaconId = null;
     _status.add(ProximityStatus.idle);
   }
 
