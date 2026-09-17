@@ -142,6 +142,43 @@ const VISIBLE_POSTS_SQL = `
          )
 `;
 
+/** 通知の種別。DB の CHECK と合わせる。 */
+type NotificationKind =
+  | 'friend_request'
+  | 'friend_accepted'
+  | 'proximity'
+  | 'like';
+
+/**
+ * アプリ内通知を1件積む。
+ *
+ * 通知の失敗で本来の操作を落としたくないので、呼び出し側では待たずに投げる。
+ */
+async function notify(
+  env: Env,
+  uid: string,
+  kind: NotificationKind,
+  options: { actorUid?: string; postId?: string } = {},
+): Promise<void> {
+  try {
+    await env.DB.prepare(
+      `INSERT INTO notifications (id, uid, kind, actor_uid, post_id, created_at)
+            VALUES (?, ?, ?, ?, ?, ?)`,
+    )
+      .bind(
+        crypto.randomUUID(),
+        uid,
+        kind,
+        options.actorUid ?? null,
+        options.postId ?? null,
+        now(),
+      )
+      .run();
+  } catch {
+    // 通知が積めなくても本体の操作は成功させる。
+  }
+}
+
 // ---------------------------------------------------------------- routing
 
 export default {
@@ -210,6 +247,8 @@ async function route(
         : fail(405, 'method_not_allowed', method);
     case 'friends':
       return handleFriends(method, rest, request, env, user);
+    case 'notifications':
+      return handleNotifications(method, rest, request, env, user);
     case 'proximity':
       if (rest[0] === 'resolve') {
         return method === 'POST'
@@ -265,23 +304,18 @@ async function handleMe(
     const username = String(body.username ?? '').trim();
     const bio = String(body.bio ?? '').trim();
 
-    if (!/^[A-Za-z0-9_.\-]{2,20}$/.test(username)) {
-      return fail(
-        400,
-        'invalid_username',
-        'ユーザー名は英数字・_ . - の2〜20文字にしてください',
-      );
+    // Google アカウントの表示名をそのまま使えるよう、日本語も通す。
+    // 制御文字だけ弾く。
+    if (username.length < 1 || [...username].length > 20) {
+      return fail(400, 'invalid_username', '名前は1〜20文字にしてください');
+    }
+    // eslint-disable-next-line no-control-regex
+    if (/[ -]/.test(username)) {
+      return fail(400, 'invalid_username', '使えない文字が含まれています');
     }
     if (bio.length > 160) {
       return fail(400, 'invalid_bio', '自己紹介は160文字までです');
     }
-
-    const taken = await env.DB.prepare(
-      'SELECT uid FROM users WHERE username = ? COLLATE NOCASE AND uid <> ?',
-    )
-      .bind(username, user.uid)
-      .first<{ uid: string }>();
-    if (taken) return fail(409, 'username_taken', 'そのユーザー名は使われています');
 
     const ts = now();
     await env.DB.prepare(
@@ -472,11 +506,26 @@ async function handlePosts(
         .first<{ id: string }>();
       if (!visible) return fail(403, 'not_visible', 'その投稿は閲覧できません');
 
-      await env.DB.prepare(
+      const inserted = await env.DB.prepare(
         'INSERT OR IGNORE INTO likes (post_id, uid, created_at) VALUES (?, ?, ?)',
       )
         .bind(postId, user.uid, now())
         .run();
+
+      // 初回のいいねだけ通知する。連打で増やさない。
+      if (inserted.meta.changes) {
+        const author = await env.DB.prepare(
+          'SELECT uid FROM posts WHERE id = ?',
+        )
+          .bind(postId)
+          .first<{ uid: string }>();
+        if (author && author.uid !== user.uid) {
+          await notify(env, author.uid, 'like', {
+            actorUid: user.uid,
+            postId,
+          });
+        }
+      }
       return json({ liked: true });
     }
     if (method === 'DELETE') {
@@ -613,16 +662,21 @@ async function handleFriends(
       )
         .bind(ts, target, user.uid)
         .run();
+      await notify(env, target, 'friend_accepted', { actorUid: user.uid });
       return json({ status: 'accepted' });
     }
 
-    await env.DB.prepare(
+    const created = await env.DB.prepare(
       `INSERT INTO friendships (requester, addressee, status, created_at, updated_at)
             VALUES (?1, ?2, 'pending', ?3, ?3)
        ON CONFLICT(requester, addressee) DO NOTHING`,
     )
       .bind(user.uid, target, ts)
       .run();
+    // 同じ相手に連続で申請しても通知は増やさない。
+    if (created.meta.changes) {
+      await notify(env, target, 'friend_request', { actorUid: user.uid });
+    }
     return json({ status: 'pending' });
   }
 
@@ -638,6 +692,7 @@ async function handleFriends(
       .bind(now(), peer, user.uid)
       .run();
     if (!res.meta.changes) return fail(404, 'not_found', '申請が見つかりません');
+    await notify(env, peer, 'friend_accepted', { actorUid: user.uid });
     return json({ status: 'accepted' });
   }
 
@@ -774,6 +829,11 @@ async function handleProximity(
     env.DB.prepare(upsert).bind(peer, user.uid, ts),
   ]);
 
+  // 仕様書 F-12。交換が成立したことを双方に残す。
+  // 呼んだ側は戻り値で知れるが、相手はアプリを見ていないかもしれない。
+  await notify(env, peer, 'proximity', { actorUid: user.uid });
+  await notify(env, user.uid, 'proximity', { actorUid: peer });
+
   const peerRow = await env.DB.prepare('SELECT username FROM users WHERE uid = ?')
     .bind(peer)
     .first<{ username: string }>();
@@ -784,6 +844,95 @@ async function handleProximity(
     peerUid: peer,
     peerName: peerRow?.username ?? '',
   });
+}
+
+// ---------------------------------------------------------------- /api/notifications
+
+interface NotificationRow {
+  id: string;
+  kind: string;
+  actor_uid: string | null;
+  actor_name: string | null;
+  actor_avatar_key: string | null;
+  post_id: string | null;
+  read_at: number | null;
+  created_at: number;
+}
+
+async function handleNotifications(
+  method: string,
+  rest: string[],
+  request: Request,
+  env: Env,
+  user: VerifiedUser,
+): Promise<Response> {
+  // GET /api/notifications — 一覧と未読件数。
+  if (method === 'GET' && rest.length === 0) {
+    const { results } = await env.DB.prepare(
+      `SELECT n.id, n.kind, n.actor_uid, n.post_id, n.read_at, n.created_at,
+              a.username AS actor_name, a.avatar_key AS actor_avatar_key
+         FROM notifications n
+         LEFT JOIN users a ON a.uid = n.actor_uid
+        WHERE n.uid = ?
+        ORDER BY n.created_at DESC
+        LIMIT 100`,
+    )
+      .bind(user.uid)
+      .all<NotificationRow>();
+
+    const unread = await env.DB.prepare(
+      'SELECT COUNT(*) AS c FROM notifications WHERE uid = ? AND read_at IS NULL',
+    )
+      .bind(user.uid)
+      .first<{ c: number }>();
+
+    return json({
+      unreadCount: unread?.c ?? 0,
+      notifications: results.map((row) => ({
+        id: row.id,
+        kind: row.kind,
+        actorUid: row.actor_uid,
+        actorName: row.actor_name,
+        actorAvatarPath: row.actor_avatar_key
+          ? `/api/media/${row.actor_avatar_key}`
+          : null,
+        postId: row.post_id,
+        read: row.read_at !== null,
+        createdAt: row.created_at,
+      })),
+    });
+  }
+
+  // POST /api/notifications/read — まとめて既読にする。
+  // id を渡さなければ全件。
+  if (method === 'POST' && rest[0] === 'read') {
+    const body = (await request.json().catch(() => null)) as {
+      ids?: unknown;
+    } | null;
+    const ids = Array.isArray(body?.ids)
+      ? body.ids.filter((v): v is string => typeof v === 'string').slice(0, 100)
+      : null;
+
+    const ts = now();
+    if (ids && ids.length > 0) {
+      const placeholders = ids.map(() => '?').join(',');
+      await env.DB.prepare(
+        `UPDATE notifications SET read_at = ?
+          WHERE uid = ? AND read_at IS NULL AND id IN (${placeholders})`,
+      )
+        .bind(ts, user.uid, ...ids)
+        .run();
+    } else {
+      await env.DB.prepare(
+        'UPDATE notifications SET read_at = ? WHERE uid = ? AND read_at IS NULL',
+      )
+        .bind(ts, user.uid)
+        .run();
+    }
+    return json({ ok: true });
+  }
+
+  return fail(404, 'not_found', rest.join('/'));
 }
 
 // ---------------------------------------------------------------- /api/media
