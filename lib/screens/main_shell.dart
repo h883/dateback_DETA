@@ -93,8 +93,10 @@ class _MainShellState extends State<MainShell> with WidgetsBindingObserver {
       const Duration(seconds: 30),
       (_) => _refreshUnread(),
     );
+    // サーバー側のローテーション周期(30秒)より十分短い間隔で確認しないと、
+    // 前世代(beacon_id_prev)の猶予を使い切ってIDを見失う。
     _beaconRefreshTimer = Timer.periodic(
-      const Duration(seconds: 60),
+      const Duration(seconds: 10),
       (_) => _refreshBeaconId(),
     );
   }

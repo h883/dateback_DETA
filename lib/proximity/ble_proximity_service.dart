@@ -33,10 +33,13 @@ class BleProximityService implements ProximityService {
   /// バッテリー消費は常時スキャンでも許容できる。
   final _liveFound = <String, NearbyPeer>{};
   Timer? _liveEmitTimer;
+  Timer? _scanRefreshTimer;
   bool _continuousScanActive = false;
 
   /// この時間見つからなかった相手は「もういない」として一覧から外す。
-  static const _peerTtl = Duration(seconds: 10);
+  /// BLEは一瞬の巡り合わせで検知が途切れることがあるため、すぐに
+  /// 消えた扱いにせず、再検知されるのを少し待つ猶予を持たせる。
+  static const _peerTtl = Duration(seconds: 30);
 
   /// dispose() 後は、待機していた非同期処理が復帰しても何もしない。
   /// 待たずに閉じた StreamController に書き込むとクラッシュするため。
@@ -125,6 +128,28 @@ class BleProximityService implements ProximityService {
     _liveEmitTimer = Timer.periodic(const Duration(seconds: 2), (_) {
       _pruneAndEmit();
     });
+
+    // BLEチップの重複除去フィルターが、内容の変わらない広告(同じ
+    // beaconId)をずっと同じとみなして、途中から報告しなくなることが
+    // ある（beaconIdをローテーションした瞬間だけ復活する、という
+    // 症状から判明）。フィルターのキャッシュをリセットするため、
+    // 「scanning too frequently」の閾値よりずっと低い頻度で
+    // スキャンを定期的に作り直す。
+    _scanRefreshTimer?.cancel();
+    _scanRefreshTimer = Timer.periodic(const Duration(seconds: 25), (_) {
+      unawaited(_refreshScan());
+    });
+  }
+
+  Future<void> _refreshScan() async {
+    if (_disposed || !_continuousScanActive) return;
+    try {
+      await FlutterBluePlus.stopScan();
+    } catch (_) {
+      // 既に止まっている。
+    }
+    _continuousScanActive = false;
+    await _startContinuousScan();
   }
 
   void _pruneAndEmit() {
@@ -227,6 +252,8 @@ class BleProximityService implements ProximityService {
   Future<void> stop() async {
     _liveEmitTimer?.cancel();
     _liveEmitTimer = null;
+    _scanRefreshTimer?.cancel();
+    _scanRefreshTimer = null;
     _liveFound.clear();
     _continuousScanActive = false;
     await _scanSub?.cancel();
@@ -252,6 +279,7 @@ class BleProximityService implements ProximityService {
   void dispose() {
     _disposed = true;
     _liveEmitTimer?.cancel();
+    _scanRefreshTimer?.cancel();
     _scanSub?.cancel();
     _adapterSub?.cancel();
     _status.close();
