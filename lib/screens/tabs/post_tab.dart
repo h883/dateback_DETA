@@ -11,7 +11,9 @@ import '../../theme/bloom_theme.dart';
 
 /// 投稿画面（仕様書 11）。
 ///
-/// 35mm は静止画、8mm は2秒の動画。モックと同じく横向きでのみ撮影させる。
+/// 35mm は静止画、8mm は2秒の動画。
+/// アプリは縦画面固定なので、この画面も縦で表示する。
+/// 端末を横に倒すとここへ来る導線は MainShell が持っている。
 class PostTab extends StatefulWidget {
   const PostTab({super.key, required this.api, required this.onPosted});
 
@@ -215,8 +217,7 @@ class _PostTabState extends State<PostTab> with WidgetsBindingObserver {
 
   @override
   Widget build(BuildContext context) {
-    // 縦でも横でも撮影できる。横向きにしたときにこの画面へ来る導線は
-    // MainShell 側が持っている。
+    // 画面は縦固定。プレビューは _fillPreview で歪みなく全画面に収める。
     return ColoredBox(
       color: const Color(0xFF050608),
       child: _cameraStage(context),

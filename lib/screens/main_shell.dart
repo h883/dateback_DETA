@@ -3,6 +3,7 @@ import 'dart:async';
 import 'package:flutter/material.dart';
 
 import '../api/bloom_api.dart';
+import '../device/tilt_watcher.dart';
 import '../models/models.dart';
 import '../proximity/ble_proximity_service.dart';
 import '../proximity/proximity_service.dart';
@@ -60,8 +61,12 @@ class _MainShellState extends State<MainShell> with WidgetsBindingObserver {
   /// 無駄な往復を減らすため端末側でも直近の相手を覚えておく。
   final _recentlyExchanged = <String, DateTime>{};
 
-  /// 横向きへの切り替わりを一度だけ拾うために、前回の向きを覚えておく。
-  Orientation? _lastOrientation;
+  /// 端末の傾き。縦画面固定なので画面の回転では拾えない。
+  final _tilt = TiltWatcher();
+  StreamSubscription<DeviceTilt>? _tiltSub;
+
+  /// 横に倒す直前にいた画面。縦に戻したらここへ帰る。
+  ShellTab? _tabBeforeTilt;
 
   /// トップバーのバッジに出す未読件数。
   int _unreadCount = 0;
@@ -75,9 +80,8 @@ class _MainShellState extends State<MainShell> with WidgetsBindingObserver {
   void initState() {
     super.initState();
     WidgetsBinding.instance.addObserver(this);
-    WidgetsBinding.instance.addPostFrameCallback((_) {
-      if (mounted) _lastOrientation = _currentOrientation();
-    });
+    _tiltSub = _tilt.changes.listen(_onTiltChanged);
+    _tilt.start();
     _startProximity();
     _refreshUnread();
     // フレンド申請などは相手の操作で増えるので、開いている間は定期的に見に行く。
@@ -110,30 +114,29 @@ class _MainShellState extends State<MainShell> with WidgetsBindingObserver {
     );
   }
 
-  Orientation _currentOrientation() {
-    final size = View.of(context).physicalSize;
-    return size.width > size.height
-        ? Orientation.landscape
-        : Orientation.portrait;
-  }
+  /// 横に倒したら撮影画面へ、縦に戻したら元いた画面へ帰る。
+  /// 画面自体は縦固定のまま回らない。
+  void _onTiltChanged(DeviceTilt tilt) {
+    if (!mounted) return;
 
-  /// 端末を横向きにしたら撮影画面へ移る。
-  /// 縦に戻したときは今いる画面のままにする。
-  @override
-  void didChangeMetrics() {
-    final orientation = _currentOrientation();
-    if (orientation == _lastOrientation) return;
-    _lastOrientation = orientation;
+    if (tilt == DeviceTilt.landscape) {
+      if (_tab == ShellTab.post) return;
+      _tabBeforeTilt = _tab;
+      _goTo(ShellTab.post);
+      return;
+    }
 
-    if (orientation != Orientation.landscape) return;
-    WidgetsBinding.instance.addPostFrameCallback((_) {
-      if (mounted && _tab != ShellTab.post) _goTo(ShellTab.post);
-    });
+    // 縦に戻した。傾ける前の画面を覚えているならそこへ帰る。
+    final back = _tabBeforeTilt;
+    _tabBeforeTilt = null;
+    if (back != null && _tab == ShellTab.post) _goTo(back);
   }
 
   @override
   void dispose() {
     WidgetsBinding.instance.removeObserver(this);
+    _tiltSub?.cancel();
+    _tilt.dispose();
     _unreadTimer?.cancel();
     _peerSub?.cancel();
     _proximity.dispose();
@@ -148,6 +151,7 @@ class _MainShellState extends State<MainShell> with WidgetsBindingObserver {
   @override
   void didChangeAppLifecycleState(AppLifecycleState state) {
     if (state == AppLifecycleState.resumed) {
+      _tilt.start();
       _startProximity();
     } else {
       unawaited(_proximity.stop());
@@ -189,6 +193,12 @@ class _MainShellState extends State<MainShell> with WidgetsBindingObserver {
     } catch (_) {
       // 通信に失敗しても次のスキャンで拾い直す。
     }
+  }
+
+  /// ナビを手で押したとき。傾きで戻る先は忘れる。
+  void _selectTab(ShellTab tab) {
+    _tabBeforeTilt = null;
+    _goTo(tab);
   }
 
   void _goTo(ShellTab tab) {
@@ -373,7 +383,7 @@ class _MainShellState extends State<MainShell> with WidgetsBindingObserver {
               child: _NavButton(
                 tab: tab,
                 active: tab == _tab,
-                onTap: () => _goTo(tab),
+                onTap: () => _selectTab(tab),
               ),
             ),
         ],
