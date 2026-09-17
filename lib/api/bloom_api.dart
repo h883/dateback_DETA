@@ -97,10 +97,15 @@ class BloomApi {
   // ------------------------------------------------------------ 投稿
 
   /// 撮影したメディアを投稿する。投稿時刻はサーバーが決める。
+  ///
+  /// [locationLabel] は撮影地(粗いエリア名、B2)。設定でOFFのとき・
+  /// 位置取得に失敗したときは null のまま渡せばよい(その場合ヘッダー
+  /// 自体を送らない)。緯度経度はここでは扱わない。
   Future<void> createPost({
     required Uint8List bytes,
     required PostKind kind,
     required String contentType,
+    String? locationLabel,
   }) async {
     final res = await _client.post(
       _uri('/api/posts'),
@@ -108,6 +113,8 @@ class BloomApi {
         ...await _authHeaders(),
         'content-type': contentType,
         'x-post-kind': kind.wire,
+        if (locationLabel != null && locationLabel.isNotEmpty)
+          'x-location-label': Uri.encodeComponent(locationLabel),
       },
       body: bytes,
     );
@@ -140,6 +147,38 @@ class BloomApi {
         ? await _client.post(uri, headers: headers)
         : await _client.delete(uri, headers: headers);
     if (res.statusCode >= 400) _throw(res);
+  }
+
+  /// この投稿にいいねしたユーザー一覧(B1)。
+  ///
+  /// この投稿を閲覧できる場合だけサーバーが返す。件数(♥ N)は既存の
+  /// [Post.likeCount] にすでに含まれているので、これは一覧を開いた
+  /// ときだけ叩く(投稿一覧取得時にまとめて先読みしない)。
+  Future<List<Profile>> fetchLikers(String postId) async {
+    final res = await _client.get(
+      _uri('/api/posts/$postId/likers'),
+      headers: await _authHeaders(),
+    );
+    final body = await _json(res);
+    return (body['likers'] as List)
+        .map((e) => Profile.fromJson(e as Map<String, dynamic>))
+        .toList();
+  }
+
+  /// 他ユーザーの、今の自分から閲覧可能な投稿一覧。
+  ///
+  /// 近距離イベント成立の前後でこれを比較し、新しく増えた投稿があるかを
+  /// クライアント側で判定するために使う（既存の `GET /api/users/:uid/posts`
+  /// をそのまま叩くだけで、バックエンドは変更していない）。
+  Future<List<Post>> fetchUserPosts(String uid) async {
+    final res = await _client.get(
+      _uri('/api/users/$uid/posts'),
+      headers: await _authHeaders(),
+    );
+    final body = await _json(res);
+    return (body['posts'] as List)
+        .map((e) => Post.fromJson(e as Map<String, dynamic>))
+        .toList();
   }
 
   // ------------------------------------------------------------ フレンド

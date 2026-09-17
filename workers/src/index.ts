@@ -28,6 +28,11 @@ const RECENT_CONTACT_WINDOW_MS = 3 * 60 * 1000;
 const MAX_MEDIA_BYTES = 25 * 1024 * 1024;
 const MAX_AVATAR_BYTES = 4 * 1024 * 1024;
 
+// B2: 撮影地ラベル。「都道府県 + 市区町村」程度の粗い文字列を想定しており、
+// 番地・施設名を書けるような長さは不要。異常に長い値は投稿自体を失敗させず
+// 切り詰める。
+const MAX_LOCATION_LABEL_LEN = 64;
+
 // ---------------------------------------------------------------- helpers
 
 function json(data: unknown, status = 200): Response {
@@ -137,6 +142,8 @@ interface PostRow {
   media_key: string;
   created_at: number;
   liked: number;
+  like_count: number;
+  location_label: string | null;
 }
 
 function toPost(row: PostRow) {
@@ -149,6 +156,8 @@ function toPost(row: PostRow) {
     mediaPath: `/api/media/${row.media_key}`,
     createdAt: row.created_at,
     liked: row.liked === 1,
+    likeCount: row.like_count,
+    locationLabel: row.location_label,
   };
 }
 
@@ -186,7 +195,9 @@ async function canViewProfile(
  */
 const VISIBLE_POSTS_SQL = `
   SELECT p.id, p.uid, u.username, u.avatar_key, p.kind, p.media_key, p.created_at,
-         EXISTS (SELECT 1 FROM likes l WHERE l.post_id = p.id AND l.uid = ?1) AS liked
+         p.location_label,
+         EXISTS (SELECT 1 FROM likes l WHERE l.post_id = p.id AND l.uid = ?1) AS liked,
+         (SELECT COUNT(*) FROM likes lc WHERE lc.post_id = p.id) AS like_count
     FROM posts p
     JOIN users u ON u.uid = p.uid
    WHERE (
@@ -506,6 +517,21 @@ async function handlePosts(
       return fail(413, 'too_large', 'メディアは25MBまでです');
     }
 
+    // B2: 撮影地(粗いエリア名)。クライアントが reverse geocoding から
+    // 組み立てた文字列を percent-encoding して送ってくる想定。緯度経度は
+    // 受け取らない。値が無い・壊れている・空文字のときは locationLabel
+    // なしとして投稿自体は続行する。
+    let locationLabel: string | null = null;
+    const rawLocation = request.headers.get('x-location-label');
+    if (rawLocation) {
+      try {
+        const decoded = decodeURIComponent(rawLocation).trim();
+        if (decoded) locationLabel = decoded.slice(0, MAX_LOCATION_LABEL_LEN);
+      } catch {
+        locationLabel = null;
+      }
+    }
+
     const id = crypto.randomUUID();
     const key = `posts/${user.uid}/${id}`;
     await env.MEDIA.put(key, bytes, { metadata: { contentType } });
@@ -513,10 +539,10 @@ async function handlePosts(
     // 投稿時刻はサーバー時刻。端末時計のずれで閲覧制御が狂わないようにする。
     const createdAt = now();
     await env.DB.prepare(
-      `INSERT INTO posts (id, uid, kind, media_key, content_type, created_at)
-            VALUES (?, ?, ?, ?, ?, ?)`,
+      `INSERT INTO posts (id, uid, kind, media_key, content_type, created_at, location_label)
+            VALUES (?, ?, ?, ?, ?, ?, ?)`,
     )
-      .bind(id, user.uid, kind, key, contentType, createdAt)
+      .bind(id, user.uid, kind, key, contentType, createdAt, locationLabel)
       .run();
 
     // 直近で近接確認済み（＝まだ近くにいるはず）のフレンドには、
@@ -528,14 +554,19 @@ async function handlePosts(
       .bind(createdAt, createdAt, user.uid, createdAt - RECENT_CONTACT_WINDOW_MS)
       .run();
 
-    return json({ id, kind, mediaPath: `/api/media/${key}`, createdAt }, 201);
+    return json(
+      { id, kind, mediaPath: `/api/media/${key}`, createdAt, locationLabel },
+      201,
+    );
   }
 
   // GET /api/posts/mine — 自分の投稿は常に全部見える。
   if (method === 'GET' && rest[0] === 'mine') {
     const { results } = await env.DB.prepare(
       `SELECT p.id, p.uid, u.username, u.avatar_key, p.kind, p.media_key, p.created_at,
-              EXISTS (SELECT 1 FROM likes l WHERE l.post_id = p.id AND l.uid = ?1) AS liked
+              p.location_label,
+              EXISTS (SELECT 1 FROM likes l WHERE l.post_id = p.id AND l.uid = ?1) AS liked,
+              (SELECT COUNT(*) FROM likes lc WHERE lc.post_id = p.id) AS like_count
          FROM posts p JOIN users u ON u.uid = p.uid
         WHERE p.uid = ?1
         ORDER BY p.created_at DESC
@@ -587,6 +618,39 @@ async function handlePosts(
       return json({ liked: false });
     }
     return fail(405, 'method_not_allowed', method);
+  }
+
+  // GET /api/posts/:id/likers — いいねした人一覧。
+  // 自分がその投稿を閲覧できる場合だけ返す（投稿本体と同じ可視性ルール）。
+  if (rest[1] === 'likers') {
+    if (method !== 'GET') return fail(405, 'method_not_allowed', method);
+    const postId = rest[0];
+
+    const visible = await env.DB.prepare(
+      `SELECT p.id, p.like_count FROM (${VISIBLE_POSTS_SQL}) p WHERE p.id = ?2`,
+    )
+      .bind(user.uid, postId)
+      .first<{ id: string; like_count: number }>();
+    if (!visible) return fail(403, 'not_visible', 'その投稿は閲覧できません');
+
+    const { results } = await env.DB.prepare(
+      `SELECT u.uid, u.username, u.avatar_key
+         FROM likes l
+         JOIN users u ON u.uid = l.uid
+        WHERE l.post_id = ?
+        ORDER BY l.created_at DESC`,
+    )
+      .bind(postId)
+      .all<{ uid: string; username: string; avatar_key: string | null }>();
+
+    return json({
+      likeCount: visible.like_count,
+      likers: results.map((r) => ({
+        uid: r.uid,
+        username: r.username,
+        avatarPath: r.avatar_key ? `/api/media/${r.avatar_key}` : null,
+      })),
+    });
   }
 
   return fail(404, 'not_found', rest.join('/'));

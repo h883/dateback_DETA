@@ -2,12 +2,21 @@ import 'package:flutter/material.dart';
 
 import '../../api/bloom_api.dart';
 import '../../models/models.dart';
+import '../../proximity/proximity_service.dart';
 import '../../theme/bloom_theme.dart';
 import '../../widgets/post_media.dart';
 import '../../widgets/remote_image.dart';
+import '../../widgets/wordmark.dart';
+import '../friends_screen.dart';
+import '../post_viewer_screen.dart';
 import '../profile_setup_screen.dart';
 
 /// プロフィール画面（仕様書 12）。自分の情報・自分の投稿・フレンド一覧。
+///
+/// v15 は全画面共通のトップバーを持たず、Profile が自前でヘッダー
+/// （wordmark・ハンバーガーメニュー）を描画する。設定ドロワーは
+/// MainShell 自身の Scaffold(endDrawer)に持たせているため、ハンバーガーは
+/// [onOpenSettings] を呼ぶだけ(画面全体を覆う一枚のドロワーにするため)。
 class ProfileTab extends StatefulWidget {
   const ProfileTab({
     super.key,
@@ -16,13 +25,20 @@ class ProfileTab extends StatefulWidget {
     required this.onProfileChanged,
     required this.onSignOut,
     required this.onToast,
+    required this.proximity,
+    required this.onOpenSettings,
   });
 
   final BloomApi api;
   final Profile profile;
   final void Function(Profile profile) onProfileChanged;
   final VoidCallback onSignOut;
+
+  /// フレンド一覧からフレンド追加シートを開くために渡す
+  /// （MainShell が保持する常時スキャン中のインスタンスをそのまま使う）。
+  final ProximityService proximity;
   final void Function(String message) onToast;
+  final VoidCallback onOpenSettings;
 
   @override
   State<ProfileTab> createState() => _ProfileTabState();
@@ -71,29 +87,36 @@ class _ProfileTabState extends State<ProfileTab> {
     );
   }
 
-  void _showFriends() {
-    showModalBottomSheet<void>(
-      context: context,
-      backgroundColor: BloomColors.surfaceContainerLow,
-      shape: const RoundedRectangleBorder(
-        borderRadius: BorderRadius.vertical(top: Radius.circular(BloomRadius.lg)),
+  Future<void> _openFriends() async {
+    await Navigator.of(context).push<void>(
+      MaterialPageRoute(
+        builder: (_) => FriendsScreen(
+          api: widget.api,
+          proximity: widget.proximity,
+          onToast: widget.onToast,
+        ),
       ),
-      builder: (_) => _FriendSheet(api: widget.api, friends: _friends),
     );
+    // フレンドを追加・削除して戻ってきているかもしれないので数を更新する。
+    if (mounted) _load();
   }
 
   @override
   Widget build(BuildContext context) {
     final profile = widget.profile;
 
-    return RefreshIndicator(
-      onRefresh: _load,
-      color: BloomColors.primaryContainer,
-      backgroundColor: BloomColors.surfaceContainerHigh,
-      child: ListView(
-        padding: const EdgeInsets.fromLTRB(18, 20, 18, 26),
-        children: [
-          Row(
+    return Column(
+      children: [
+        _header(),
+        Expanded(
+          child: RefreshIndicator(
+            onRefresh: _load,
+            color: BloomColors.primaryContainer,
+            backgroundColor: BloomColors.surfaceContainerHigh,
+            child: ListView(
+              padding: const EdgeInsets.fromLTRB(18, 6, 18, 26),
+              children: [
+                Row(
             crossAxisAlignment: CrossAxisAlignment.center,
             children: [
               RemoteAvatar(api: widget.api, path: profile.avatarPath, size: 74),
@@ -130,7 +153,7 @@ class _ProfileTabState extends State<ProfileTab> {
           const SizedBox(height: 14),
           _rowButton(
             'フレンド ${_friends.length}人',
-            onTap: _friends.isEmpty ? null : _showFriends,
+            onTap: _openFriends,
           ),
           const SizedBox(height: 8),
           _rowButton('ログアウト', onTap: widget.onSignOut),
@@ -166,11 +189,46 @@ class _ProfileTabState extends State<ProfileTab> {
                 childAspectRatio: 3 / 2,
               ),
               itemCount: _posts.length,
-              itemBuilder: (context, i) => _GridTile(
-                api: widget.api,
-                post: _posts[i],
+              itemBuilder: (context, i) => GestureDetector(
+                onTap: () => showPostViewer(
+                  context,
+                  api: widget.api,
+                  posts: _posts,
+                  initialIndex: i,
+                  onToast: widget.onToast,
+                  isOwn: true,
+                ),
+                child: _GridTile(
+                  api: widget.api,
+                  post: _posts[i],
+                ),
               ),
             ),
+              ],
+            ),
+          ),
+        ),
+      ],
+    );
+  }
+
+  Widget _header() {
+    return Padding(
+      padding: const EdgeInsets.fromLTRB(18, 6, 14, 6),
+      child: Row(
+        mainAxisAlignment: MainAxisAlignment.spaceBetween,
+        children: [
+          const Wordmark(),
+          GestureDetector(
+            onTap: widget.onOpenSettings,
+            behavior: HitTestBehavior.opaque,
+            child: Container(
+              width: 44,
+              height: 44,
+              alignment: Alignment.center,
+              child: Icon(Icons.menu, size: 22, color: context.colors.onSurface),
+            ),
+          ),
         ],
       ),
     );
@@ -233,59 +291,5 @@ class _GridTile extends StatelessWidget {
         ],
       ),
     );
-  }
-}
-
-/// フレンド一覧。各フレンドについて今どこまで見られるかも出す（仕様書 12.2）。
-class _FriendSheet extends StatelessWidget {
-  const _FriendSheet({required this.api, required this.friends});
-
-  final BloomApi api;
-  final List<Friend> friends;
-
-  @override
-  Widget build(BuildContext context) {
-    return SafeArea(
-      child: ListView.separated(
-        shrinkWrap: true,
-        padding: const EdgeInsets.all(18),
-        itemCount: friends.length,
-        separatorBuilder: (_, _) => const SizedBox(height: 10),
-        itemBuilder: (context, i) {
-          final friend = friends[i];
-          final until = friend.visibleUntil;
-          return Row(
-            children: [
-              RemoteAvatar(api: api, path: friend.profile.avatarPath, size: 34),
-              const SizedBox(width: 10),
-              Expanded(
-                child: Column(
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  children: [
-                    Text(
-                      friend.profile.username,
-                      style: BloomText.labelLg
-                          .copyWith(fontWeight: FontWeight.w700),
-                    ),
-                    Text(
-                      until == null
-                          ? 'まだ会っていません'
-                          : '${_formatDateTime(until)} までの投稿が見られます',
-                      style: BloomText.labelSm
-                          .copyWith(color: BloomColors.secondary),
-                    ),
-                  ],
-                ),
-              ),
-            ],
-          );
-        },
-      ),
-    );
-  }
-
-  static String _formatDateTime(DateTime dt) {
-    String two(int v) => v.toString().padLeft(2, '0');
-    return '${dt.year}/${two(dt.month)}/${two(dt.day)} ${two(dt.hour)}:${two(dt.minute)}';
   }
 }

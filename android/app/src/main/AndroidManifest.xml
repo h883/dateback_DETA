@@ -1,8 +1,11 @@
 <manifest xmlns:android="http://schemas.android.com/apk/res/android">
     <!-- 投稿写真をネットワークから読み込むため、リリースビルドでも必要 -->
     <uses-permission android:name="android.permission.INTERNET"/>
+    <!-- Android 13(API 33)以降、通知を表示するには実行時許可が要る。
+         初回セットアップ画面の「通知」項目で要求するために宣言する。 -->
+    <uses-permission android:name="android.permission.POST_NOTIFICATIONS"/>
     <application
-        android:label="Bloom"
+        android:label="dateback"
         android:name="${applicationName}"
         android:icon="@mipmap/ic_launcher">
         <activity

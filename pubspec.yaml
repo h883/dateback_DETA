@@ -46,6 +46,11 @@ dependencies:
   flutter_ble_peripheral: ^3.1.0
   permission_handler: ^13.0.2
   sensors_plus: ^7.1.0
+  shared_preferences: ^2.3.0
+  path_provider: ^2.1.5
+  image: ^4.3.0
+  geolocator: ^13.0.0
+  geocoding: ^5.0.0
 
 dev_dependencies:
   flutter_test:

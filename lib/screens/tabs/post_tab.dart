@@ -3,22 +3,116 @@ import 'dart:io';
 import 'dart:typed_data';
 
 import 'package:camera/camera.dart';
+import 'package:flutter/foundation.dart' show compute;
 import 'package:flutter/material.dart';
+import 'package:image/image.dart' as img;
 
 import '../../api/bloom_api.dart';
 import '../../models/models.dart';
 import '../../theme/bloom_theme.dart';
+import '../../widgets/film_effects.dart';
 
-/// 投稿画面（仕様書 11）。
+/// 投稿処理の結果。MainShell はこれを見て Home への遷移・成功/失敗の
+/// バナー表示・(失敗時の)再試行/下書き保存を行う。
+///
+/// PostTab は「アップロードを試みた結果」を渡すところまでが責務で、
+/// 成功後のビューアー導線や失敗後の再試行・下書き保存は MainShell 側
+/// (Phase 6)で扱う。
+sealed class PostOutcome {
+  const PostOutcome();
+}
+
+class PostSuccess extends PostOutcome {
+  const PostSuccess();
+}
+
+class PostFailure extends PostOutcome {
+  const PostFailure({
+    required this.bytes,
+    required this.kind,
+    required this.contentType,
+    this.locationLabel,
+  });
+
+  /// 失敗したメディアそのもの。再試行・下書き保存にそのまま使う。
+  final Uint8List bytes;
+  final PostKind kind;
+  final String contentType;
+
+  /// 撮影時に取得済みの撮影地(B2)。再試行・下書き保存では位置を
+  /// 取り直さず、これをそのまま使う。
+  final String? locationLabel;
+}
+
+/// 撮影フレームの縦横比。ユーザーが見ている範囲と投稿される範囲を一致させる
+/// ため、静止画はこの比率へ中央切り出しする([_cropTo3x2])。
+///
+/// 動画については camera プラグインに「3:2 で録画ファイルそのものを書き出す」
+/// 手段が無く、切り出しには動画の再エンコードが要る(=重い native/FFmpeg
+/// 依存が要る)。それは今回追加しない方針のため、動画はプレビューの見た目
+/// だけをこの比率に合わせ、実際に保存されるファイルはセンサーのネイティブ
+/// 比率のまま(Phase 7 の制約として報告する)。
+const _targetAspect = 3 / 2;
+
+/// 撮影した静止画を中央から 3:2 へ切り出す。[compute] で別 isolate で
+/// 実行するためのトップレベル関数。
+Uint8List _cropTo3x2(Uint8List jpegBytes) {
+  final decoded = img.decodeImage(jpegBytes);
+  if (decoded == null) return jpegBytes;
+  // EXIF の回転情報をピクセルへ焼き込んでから切り出す
+  // (焼き込まないと端末によっては横倒しのまま切り出してしまう)。
+  final oriented = img.bakeOrientation(decoded);
+
+  final w = oriented.width;
+  final h = oriented.height;
+  var cropW = w;
+  var cropH = h;
+  if (w / h > _targetAspect) {
+    cropW = (h * _targetAspect).round();
+  } else {
+    cropH = (w / _targetAspect).round();
+  }
+  final x = ((w - cropW) / 2).round();
+  final y = ((h - cropH) / 2).round();
+  final cropped =
+      img.copyCrop(oriented, x: x, y: y, width: cropW, height: cropH);
+  return img.encodeJpg(cropped, quality: 92);
+}
+
+/// 投稿画面(仕様書 11)。
 ///
 /// 35mm は静止画、8mm は2秒の動画。
 /// アプリは縦画面固定なので、この画面も縦で表示する。
 /// 端末を横に倒すとここへ来る導線は MainShell が持っている。
 class PostTab extends StatefulWidget {
-  const PostTab({super.key, required this.api, required this.onPosted});
+  const PostTab({
+    super.key,
+    required this.api,
+    required this.onPostResult,
+    required this.onHome,
+    required this.onBusyChanged,
+    required this.onCaptureLocation,
+  });
 
   final BloomApi api;
-  final VoidCallback onPosted;
+
+  /// 投稿の成功・失敗を MainShell へ伝える。成功/失敗どちらでも
+  /// このあと MainShell が Home へ戻す(中間確認画面は挟まない)。
+  final void Function(PostOutcome outcome) onPostResult;
+
+  /// 右上の Home ボタン。v15 は Camera に portrait 用ヘッダーを持たず、
+  /// カメラ右レール上部の Home アイコンだけで戻れる。
+  final VoidCallback onHome;
+
+  /// 撮影確認中・投稿処理中・セルフタイマー中かどうかを MainShell に伝える。
+  /// 縦へ戻ったときに Camera を閉じてよいかの判断に使われる。
+  final void Function(bool busy) onBusyChanged;
+
+  /// 撮影地(粗いエリア名)の取得(B2)。ON/OFF の判断([SettingsStore.
+  /// autoLocationEnabled])は呼び出し元(MainShell)が持ち、この callback
+  /// 自体は「呼ばれたら試みる」だけ。OFF のときは呼び出し元が最初から
+  /// `Future.value(null)` を返すので、ここでは何も分岐しない。
+  final Future<String?> Function() onCaptureLocation;
 
   @override
   State<PostTab> createState() => _PostTabState();
@@ -27,20 +121,50 @@ class PostTab extends StatefulWidget {
 class _PostTabState extends State<PostTab> with WidgetsBindingObserver {
   static const _recordDuration = Duration(seconds: 2);
 
+  /// OFF / 3秒 / 10秒。
+  static const _timerChoices = <int>[0, 3, 10];
+
+  List<CameraDescription> _cameras = const [];
   CameraController? _controller;
   String? _cameraError;
 
   /// 初期化中の多重起動を防ぐ。回転のたびに resumed が来るため。
   bool _settingUp = false;
 
+  /// 前後カメラ切替の連打・競合を防ぐ。
+  bool _switchingCamera = false;
+
   PostKind _mode = PostKind.film35mm;
   bool _recording = false;
   bool _uploading = false;
 
-  /// 撮影済みの一枚（または2秒）。投稿するまで保持する。
+  /// takePicture() 呼び出しからバイト列を受け取るまでの間だけ true。
+  bool _capturing = false;
+
+  /// 撮影直後、静止画を 3:2 へ切り出している間だけ true。
+  bool _cropping = false;
+
+  /// 撮影済みの一枚(または2秒)。投稿するまで保持する。
   Uint8List? _captured;
   String? _capturedContentType;
   Uint8List? _stillPreview;
+
+  /// 撮影した瞬間(シャッターが切られたタイミング)にだけ取得を試みる
+  /// 撮影地(B2)。カメラを開いただけでは開始しない。投稿・下書き保存の
+  /// タイミングでこれを待つ。
+  Future<String?>? _locationFuture;
+
+  FlashMode _flashMode = FlashMode.off;
+
+  int _timerIndex = 0;
+  int get _timerSeconds => _timerChoices[_timerIndex];
+
+  /// セルフタイマーの残り秒数。null のときはタイマー動作中でない。
+  int? _countdownRemaining;
+
+  /// タイマー待機中に Camera が破棄された場合、進行中のカウントダウンを
+  /// 打ち切るためのトークン。
+  int _countdownToken = 0;
 
   @override
   void initState() {
@@ -52,6 +176,7 @@ class _PostTabState extends State<PostTab> with WidgetsBindingObserver {
   @override
   void dispose() {
     WidgetsBinding.instance.removeObserver(this);
+    _countdownToken++;
     _controller?.dispose();
     super.dispose();
   }
@@ -67,10 +192,15 @@ class _PostTabState extends State<PostTab> with WidgetsBindingObserver {
 
   /// 破棄済みのコントローラを build が掴まないよう、参照を外してから捨てる。
   void _disposeCamera() {
+    _countdownToken++; // 進行中のカウントダウンがあれば打ち切る。
     final controller = _controller;
     if (controller == null) return;
     if (mounted) {
-      setState(() => _controller = null);
+      setState(() {
+        _controller = null;
+        _countdownRemaining = null;
+      });
+      _reportBusy();
     } else {
       _controller = null;
     }
@@ -81,7 +211,8 @@ class _PostTabState extends State<PostTab> with WidgetsBindingObserver {
     if (_settingUp || _controller != null) return;
     _settingUp = true;
     try {
-      final cameras = await availableCameras();
+      final cameras =
+          _cameras.isNotEmpty ? _cameras : await availableCameras();
       if (cameras.isEmpty) {
         if (mounted) setState(() => _cameraError = 'カメラが見つかりませんでした');
         return;
@@ -90,22 +221,15 @@ class _PostTabState extends State<PostTab> with WidgetsBindingObserver {
         (c) => c.lensDirection == CameraLensDirection.back,
         orElse: () => cameras.first,
       );
-      final controller = CameraController(
-        back,
-        ResolutionPreset.high,
-        // 8mm は音も込みで残す。
-        enableAudio: true,
-      );
-      // 初期化が済んでから公開する。半端な状態を build に見せない。
-      await controller.initialize();
-      if (!mounted) {
-        await controller.dispose();
-        return;
+      final controller = await _createController(back);
+      _cameras = cameras;
+      if (controller == null) return;
+      if (mounted) {
+        setState(() {
+          _controller = controller;
+          _cameraError = null;
+        });
       }
-      setState(() {
-        _controller = controller;
-        _cameraError = null;
-      });
     } on CameraException catch (e) {
       if (mounted) {
         setState(() => _cameraError = 'カメラを使えません: ${e.description ?? e.code}');
@@ -117,14 +241,181 @@ class _PostTabState extends State<PostTab> with WidgetsBindingObserver {
     }
   }
 
+  /// [description] で初期化済みの [CameraController] を作る。
+  /// dateback は無音のため、8mm でもマイクは使わない
+  /// (依存パッケージがマニフェストへ静的に足す RECORD_AUDIO はここでは
+  /// 制御できないが、`enableAudio: false` により実行時にマイクへは
+  /// 一切アクセスしない)。
+  Future<CameraController?> _createController(
+    CameraDescription description,
+  ) async {
+    final controller = CameraController(
+      description,
+      ResolutionPreset.high,
+      enableAudio: false,
+    );
+    await controller.initialize();
+    if (!mounted) {
+      await controller.dispose();
+      return null;
+    }
+    try {
+      await controller.setFlashMode(FlashMode.off);
+    } catch (_) {
+      // フラッシュが無い端末では失敗して当然。既定値のままにする。
+    }
+    return controller;
+  }
+
+  /// 撮影処理中・確認中・投稿中はすべて「busy」として扱う。MainShell は
+  /// これを見て、縦に戻したときに Camera を閉じてよいか判断する。
+  /// 二重シャッター・二重投稿を防ぐガードにも使う。
+  bool get _busy =>
+      _capturing ||
+      _cropping ||
+      _countdownRemaining != null ||
+      _captured != null ||
+      _uploading ||
+      _recording;
+
+  void _reportBusy() {
+    widget.onBusyChanged(_busy);
+  }
+
   void _setMode(PostKind mode) {
-    if (_recording) return;
+    if (_busy) return;
     setState(() {
       _mode = mode;
       _captured = null;
       _capturedContentType = null;
       _stillPreview = null;
     });
+    _locationFuture = null;
+    _reportBusy();
+  }
+
+  /// 実在する前後カメラを切り替える。連打や多重初期化を防ぐ。
+  ///
+  /// 新旧2つの [CameraController] を同時に持つと端末によってはリソースが
+  /// 競合するため、必ず「1. 切替中フラグ → 2. 現controllerをUIから外す
+  /// → 3. 旧controllerをdispose → 4. 次cameraをinitialize → 5. 成功したら
+  /// 公開」の順で行う。次カメラの初期化に失敗したら、元の
+  /// [CameraDescription] で一度だけ復旧を試みる(無限リトライはしない)。
+  Future<void> _switchCamera() async {
+    if (_switchingCamera || _busy) return;
+    final oldController = _controller;
+    final current = oldController?.description;
+    if (oldController == null || current == null) return;
+    final directions = _cameras.map((c) => c.lensDirection).toSet();
+    if (directions.length < 2) return;
+
+    final nextDirection = current.lensDirection == CameraLensDirection.back
+        ? CameraLensDirection.front
+        : CameraLensDirection.back;
+    final next = _cameras.firstWhere(
+      (c) => c.lensDirection == nextDirection,
+      orElse: () => current,
+    );
+    if (next == current) return;
+
+    // 1. 切替中フラグ / 2. 現controllerをUIから外す。
+    setState(() {
+      _switchingCamera = true;
+      _controller = null;
+    });
+
+    // 3. 旧controllerをdispose。
+    try {
+      await oldController.dispose();
+    } catch (_) {
+      // 破棄に失敗しても続行する。
+    }
+
+    // 4. 次cameraをinitialize。
+    CameraController? controller;
+    try {
+      controller = await _createController(next);
+    } catch (_) {
+      controller = null;
+    }
+
+    // 失敗したら元の CameraDescription で一度だけ復旧を試みる。
+    var recovered = false;
+    if (controller == null) {
+      recovered = true;
+      try {
+        controller = await _createController(current);
+      } catch (_) {
+        controller = null;
+      }
+    }
+
+    if (!mounted) {
+      await controller?.dispose();
+      return;
+    }
+
+    if (controller == null) {
+      setState(() {
+        _switchingCamera = false;
+        _cameraError = 'カメラを切り替えられませんでした';
+      });
+      return;
+    }
+
+    setState(() {
+      _controller = controller;
+      _switchingCamera = false;
+      _cameraError = null;
+      // 前面カメラ等でフラッシュが無いことが多いので引き継がない。
+      _flashMode = FlashMode.off;
+    });
+    if (recovered) _snack('カメラを切り替えられませんでした');
+  }
+
+  /// off → auto → always の順で切り替える。camera プラグインが実際に
+  /// 対応している [FlashMode] だけを使い、失敗したら状態を変えない
+  /// (使えるように見せかけない)。前面カメラでは呼ばない(UI側で隠す)。
+  Future<void> _cycleFlash() async {
+    final controller = _controller;
+    if (controller == null) return;
+    const order = [FlashMode.off, FlashMode.auto, FlashMode.always];
+    final next = order[(order.indexOf(_flashMode) + 1) % order.length];
+    try {
+      await controller.setFlashMode(next);
+      if (mounted) setState(() => _flashMode = next);
+    } catch (_) {
+      // この端末・このカメラでは対応していない。
+    }
+  }
+
+  void _cycleTimer() {
+    if (_countdownRemaining != null) return;
+    setState(() => _timerIndex = (_timerIndex + 1) % _timerChoices.length);
+  }
+
+  /// シャッター。タイマーが設定されていれば指定秒数待ってから撮影する。
+  /// カウントダウン中・撮影確認中・投稿中の二重起動を防ぐ。
+  Future<void> _onShutterTap() async {
+    if (_busy) return;
+    final controller = _controller;
+    if (controller == null || !controller.value.isInitialized) return;
+
+    final seconds = _timerSeconds;
+    if (seconds > 0) {
+      final token = ++_countdownToken;
+      for (var remaining = seconds; remaining >= 1; remaining--) {
+        if (!mounted || token != _countdownToken) return;
+        setState(() => _countdownRemaining = remaining);
+        _reportBusy();
+        await Future<void>.delayed(const Duration(seconds: 1));
+      }
+      if (!mounted || token != _countdownToken) return;
+      setState(() => _countdownRemaining = null);
+      _reportBusy();
+    }
+
+    await _shoot();
   }
 
   Future<void> _shoot() async {
@@ -139,23 +430,52 @@ class _PostTabState extends State<PostTab> with WidgetsBindingObserver {
     }
   }
 
+  /// 撮影 → 3:2 へ中央切り出し(見えている範囲と投稿される範囲を一致させる)。
+  /// takePicture() 開始からクロップ完了まで一貫して busy にする
+  /// (この間にシャッター再押下や縦向き復帰で Camera を閉じられないように)。
   Future<void> _take35mm(CameraController controller) async {
+    setState(() => _capturing = true);
+    _reportBusy();
+    // 画像処理と並行して進めておく(投稿確認画面の表示を位置取得で
+    // 待たせない)。実際に使うのは _post() で投稿する瞬間。
+    _locationFuture = widget.onCaptureLocation();
     try {
       final shot = await controller.takePicture();
-      final bytes = await shot.readAsBytes();
+      final raw = await shot.readAsBytes();
       if (!mounted) return;
       setState(() {
-        _captured = bytes;
-        _capturedContentType = 'image/jpeg';
-        _stillPreview = bytes;
+        _capturing = false;
+        _cropping = true;
       });
+      _reportBusy();
+      final cropped = await compute(_cropTo3x2, raw);
+      if (!mounted) return;
+      setState(() {
+        _cropping = false;
+        _captured = cropped;
+        _capturedContentType = 'image/jpeg';
+        _stillPreview = cropped;
+      });
+      _reportBusy();
     } catch (e) {
-      if (mounted) _snack('撮影できませんでした: $e');
+      if (mounted) {
+        setState(() {
+          _capturing = false;
+          _cropping = false;
+        });
+        _reportBusy();
+        _snack('撮影できませんでした: $e');
+      }
     }
   }
 
+  /// 約2秒・無音で録画する。ファイルそのものの 3:2 切り出しは行わない
+  /// (Phase 7 の制約。クラスドキュメント・報告を参照)。
   Future<void> _take8mm(CameraController controller) async {
     setState(() => _recording = true);
+    // 録画と並行して進めておく(投稿確認画面の表示を位置取得で
+    // 待たせない)。実際に使うのは _post() で投稿する瞬間。
+    _locationFuture = widget.onCaptureLocation();
     try {
       await controller.startVideoRecording();
       await Future<void>.delayed(_recordDuration);
@@ -167,6 +487,7 @@ class _PostTabState extends State<PostTab> with WidgetsBindingObserver {
         _capturedContentType = 'video/mp4';
         _stillPreview = null;
       });
+      _reportBusy();
     } catch (e) {
       if (mounted) _snack('撮影できませんでした: $e');
     } finally {
@@ -181,34 +502,61 @@ class _PostTabState extends State<PostTab> with WidgetsBindingObserver {
       _capturedContentType = null;
       _stillPreview = null;
     });
+    _locationFuture = null;
+    _reportBusy();
   }
 
   Future<void> _post() async {
     final bytes = _captured;
     final contentType = _capturedContentType;
+    final kind = _mode;
     if (bytes == null || contentType == null || _uploading) return;
 
     setState(() => _uploading = true);
+    _reportBusy();
+
+    // 撮影時から並行して進めていた撮影地取得の結果を待つ(取り直していなければ
+    // アップロード自体の通信時間と重なっているので、ここでの追加待ちは
+    // 通常ほぼ無い)。失敗時は null のまま(LocationService 側で吸収済み)。
+    String? locationLabel;
+    try {
+      locationLabel = await _locationFuture;
+    } catch (_) {
+      locationLabel = null;
+    }
+
+    PostOutcome outcome;
     try {
       await widget.api.createPost(
         bytes: bytes,
-        kind: _mode,
+        kind: kind,
         contentType: contentType,
+        locationLabel: locationLabel,
       );
-      if (!mounted) return;
-      setState(() {
-        _captured = null;
-        _capturedContentType = null;
-        _stillPreview = null;
-      });
-      widget.onPosted();
-    } on BloomApiException catch (e) {
-      if (mounted) _snack(e.message);
-    } catch (e) {
-      if (mounted) _snack('投稿できませんでした: $e');
-    } finally {
-      if (mounted) setState(() => _uploading = false);
+      outcome = const PostSuccess();
+    } catch (_) {
+      // 成功/失敗どちらも、これ以降は MainShell が Home へ戻して伝える
+      // (中間確認画面なし)。ここではメッセージの出し分けはしない。
+      outcome = PostFailure(
+        bytes: bytes,
+        kind: kind,
+        contentType: contentType,
+        locationLabel: locationLabel,
+      );
     }
+
+    if (!mounted) return;
+    // 成功・失敗どちらでも、この画面自体の「撮影確認中・投稿処理中」は
+    // ここで終わる。busy を残留させない。
+    setState(() {
+      _uploading = false;
+      _captured = null;
+      _capturedContentType = null;
+      _stillPreview = null;
+    });
+    _locationFuture = null;
+    _reportBusy();
+    widget.onPostResult(outcome);
   }
 
   void _snack(String message) {
@@ -217,10 +565,10 @@ class _PostTabState extends State<PostTab> with WidgetsBindingObserver {
 
   @override
   Widget build(BuildContext context) {
-    // 画面は縦固定。プレビューは _fillPreview で歪みなく全画面に収める。
+    // 画面は縦固定。Camera は横向き専用UIで、カメラ映像を主役にする。
     return ColoredBox(
       color: const Color(0xFF050608),
-      child: _cameraStage(context),
+      child: SafeArea(child: _cameraStage(context)),
     );
   }
 
@@ -228,49 +576,80 @@ class _PostTabState extends State<PostTab> with WidgetsBindingObserver {
     final controller = _controller;
     final error = _cameraError;
 
-    return Stack(
-      fit: StackFit.expand,
+    if (error != null) {
+      return Center(
+        child: Padding(
+          padding: const EdgeInsets.symmetric(horizontal: 32),
+          child: Text(
+            error,
+            style: BloomText.bodySm.copyWith(color: BloomColors.secondary),
+            textAlign: TextAlign.center,
+          ),
+        ),
+      );
+    }
+    if (controller == null || !controller.value.isInitialized) {
+      return const Center(
+        child: CircularProgressIndicator(color: BloomColors.primaryContainer),
+      );
+    }
+
+    return Row(
       children: [
-        if (error != null)
-          Center(
-            child: Padding(
-              padding: const EdgeInsets.symmetric(horizontal: 32),
-              child: Text(
-                error,
-                style: BloomText.bodySm.copyWith(color: BloomColors.secondary),
-                textAlign: TextAlign.center,
-              ),
-            ),
-          )
-        else if (controller == null)
-          const Center(
-            child: CircularProgressIndicator(color: BloomColors.primaryContainer),
-          )
-        else if (!controller.value.isInitialized)
-          const Center(
-            child: CircularProgressIndicator(color: BloomColors.primaryContainer),
-          )
-        // 撮影済みの静止画があればそれを見せる（8mm は撮り終えたら素通し）。
-        else if (_stillPreview != null)
-          Image.memory(_stillPreview!, fit: BoxFit.cover)
-        else
-          _previewFilter(_fillPreview(context, controller)),
-        if (_recording) const _RecordChip(),
-        Positioned(top: 14, left: 0, right: 0, child: Center(child: _modeSwitch())),
-        Positioned(left: 18, top: 18, child: _copy()),
-        Positioned(right: 18, bottom: 18, child: _stamp()),
-        Positioned(left: 0, right: 0, bottom: 18, child: Center(child: _controls())),
+        _leftTools(),
+        Expanded(child: Center(child: _previewFrame(controller))),
+        _rightRail(),
       ],
     );
   }
 
-  /// プレビューを歪めずに画面いっぱいに収める。
+  /// 3:2 の撮影フレーム。見えている範囲と投稿される範囲を一致させる中心。
   ///
-  /// CameraPreview はセンサーの縦横比で描くので、縦向きでは画面と比率が合わない。
-  /// 差のぶんだけ拡大して切り落とす（BoxFit.cover と同じ考え方）。
-  Widget _fillPreview(BuildContext context, CameraController controller) {
-    final screen = MediaQuery.sizeOf(context);
-    var scale = screen.aspectRatio * controller.value.aspectRatio;
+  /// フィルムゲート・グレイン・ジッターは [Film8mmEffects](共通実装)を
+  /// 映像レイヤーだけに適用し、日付スタンプ・録画中インジケーター・
+  /// カウントダウンはその上の固定レイヤーとして揺らさない。
+  Widget _previewFrame(CameraController controller) {
+    final filmActive = _mode == PostKind.film8mm;
+    return AspectRatio(
+      aspectRatio: _targetAspect,
+      child: ClipRRect(
+        borderRadius: BorderRadius.circular(13),
+        child: Container(
+          decoration: BoxDecoration(
+            color: Colors.black,
+            border: Border.all(color: Colors.white24),
+          ),
+          child: Stack(
+            fit: StackFit.expand,
+            children: [
+              Film8mmEffects(
+                active: filmActive,
+                child: _stillPreview != null
+                    ? Image.memory(_stillPreview!, fit: BoxFit.cover)
+                    : _cropping
+                        ? const Center(
+                            child: CircularProgressIndicator(
+                              color: Colors.white70,
+                            ),
+                          )
+                        : _previewFilter(_fillPreview(controller)),
+              ),
+              if (_recording) const _RecordDot(),
+              Positioned(right: 12, bottom: 10, child: _stamp()),
+              if (_countdownRemaining != null) _countdownOverlay(),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+
+  /// プレビューを歪めずに 3:2 の枠いっぱいに収める。
+  ///
+  /// CameraPreview はセンサーの縦横比で描くので、3:2 の枠とは比率が合わない。
+  /// 差のぶんだけ拡大して切り落とす(BoxFit.cover と同じ考え方)。
+  Widget _fillPreview(CameraController controller) {
+    var scale = _targetAspect / controller.value.aspectRatio;
     if (scale < 1) scale = 1 / scale;
 
     return ClipRect(
@@ -296,74 +675,22 @@ class _PostTabState extends State<PostTab> with WidgetsBindingObserver {
     );
   }
 
-  Widget _modeSwitch() {
-    return Container(
-      padding: const EdgeInsets.all(4),
-      constraints: const BoxConstraints(minWidth: 190),
-      decoration: BoxDecoration(
-        color: BloomColors.scrim.withValues(alpha: 0.68),
-        border: Border.all(color: Colors.white.withValues(alpha: 0.15)),
-        borderRadius: BorderRadius.circular(BloomRadius.pill),
-      ),
-      child: Row(
-        mainAxisSize: MainAxisSize.min,
-        children: [
-          for (final mode in PostKind.values)
-            GestureDetector(
-              onTap: () => _setMode(mode),
-              child: Container(
-                padding:
-                    const EdgeInsets.symmetric(horizontal: 19, vertical: 9),
-                decoration: BoxDecoration(
-                  color: _mode == mode ? const Color(0xFFF1EFED) : null,
-                  borderRadius: BorderRadius.circular(BloomRadius.pill),
-                ),
-                child: Text(
-                  mode.wire,
-                  style: BloomText.labelLg.copyWith(
-                    fontWeight: FontWeight.w700,
-                    color: _mode == mode
-                        ? const Color(0xFF17181B)
-                        : const Color(0xFFA6A8AF),
-                  ),
-                ),
-              ),
-            ),
-        ],
-      ),
-    );
-  }
-
-  Widget _copy() {
-    final (title, body) = switch ((_mode, _captured != null, _recording)) {
-      (_, _, true) => ('', '2秒だけ撮影中…'),
-      (PostKind.film35mm, true, _) => ('', 'この一枚で残す？'),
-      (PostKind.film8mm, true, _) => ('', '2秒の記憶を残す？'),
-      (PostKind.film35mm, false, _) => ('35mm', 'その瞬間を一枚。'),
-      (PostKind.film8mm, false, _) => ('8mm', '2秒だけ、動く記憶。'),
-    };
-
-    return SizedBox(
-      width: 170,
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        mainAxisSize: MainAxisSize.min,
-        children: [
-          if (title.isNotEmpty)
-            Text(
-              title,
-              style: BloomText.bodySm.copyWith(
-                color: Colors.white,
-                fontWeight: FontWeight.w700,
-              ),
-            ),
-          Text(
-            body,
-            style: BloomText.bodySm.copyWith(
-              color: Colors.white.withValues(alpha: 0.78),
-            ),
+  /// 35mm は残り秒数を数字で見せる。8mm は録画に数字を出さない方針と
+  /// 揃え、控えめなリングだけにする(数値カウントダウンは出さない)。
+  Widget _countdownOverlay() {
+    if (_mode == PostKind.film8mm) {
+      return const IgnorePointer(child: Center(child: _CountdownRing()));
+    }
+    return IgnorePointer(
+      child: Center(
+        child: Text(
+          '${_countdownRemaining ?? ''}',
+          style: const TextStyle(
+            fontSize: 56,
+            fontWeight: FontWeight.w300,
+            color: Colors.white70,
           ),
-        ],
+        ),
       ),
     );
   }
@@ -381,40 +708,196 @@ class _PostTabState extends State<PostTab> with WidgetsBindingObserver {
     );
   }
 
-  Widget _controls() {
-    final taken = _captured != null;
+  /// v15 の左側ツール(flash・前後カメラ・タイマー)。撮影確認中は隠す。
+  Widget _leftTools() {
+    final controller = _controller;
+    if (controller == null || _busy) {
+      return const SizedBox(width: 62);
+    }
+    final canFlash = controller.description.lensDirection ==
+        CameraLensDirection.back;
+    final canFlip =
+        _cameras.map((c) => c.lensDirection).toSet().length > 1;
 
-    return Row(
+    return SizedBox(
+      width: 62,
+      child: Column(
+        mainAxisAlignment: MainAxisAlignment.center,
+        children: [
+          if (canFlash) ...[
+            _toolChip(icon: _flashIcon(), onTap: _cycleFlash),
+            const SizedBox(height: 10),
+          ],
+          if (canFlip) ...[
+            _toolChip(
+              icon: Icons.cameraswitch_outlined,
+              onTap: _switchingCamera ? null : _switchCamera,
+            ),
+            const SizedBox(height: 10),
+          ],
+          _toolChip(
+            icon: Icons.timer_outlined,
+            onTap: _cycleTimer,
+            badge: _timerSeconds == 0 ? 'off' : '$_timerSeconds',
+          ),
+        ],
+      ),
+    );
+  }
+
+  IconData _flashIcon() => switch (_flashMode) {
+        FlashMode.off => Icons.flash_off,
+        FlashMode.auto => Icons.flash_auto,
+        _ => Icons.flash_on,
+      };
+
+  Widget _toolChip({
+    required IconData icon,
+    VoidCallback? onTap,
+    String? badge,
+  }) {
+    return GestureDetector(
+      onTap: onTap,
+      child: Container(
+        width: 44,
+        height: 44,
+        alignment: Alignment.center,
+        decoration: BoxDecoration(
+          shape: BoxShape.circle,
+          color: Colors.black.withValues(alpha: 0.4),
+          border: Border.all(color: Colors.white24),
+        ),
+        child: Stack(
+          clipBehavior: Clip.none,
+          alignment: Alignment.center,
+          children: [
+            Icon(icon, size: 19, color: Colors.white),
+            if (badge != null)
+              Positioned(
+                right: -3,
+                bottom: -3,
+                child: Container(
+                  padding:
+                      const EdgeInsets.symmetric(horizontal: 4, vertical: 1),
+                  decoration: BoxDecoration(
+                    color: const Color(0xFFEEE9DF),
+                    borderRadius: BorderRadius.circular(8),
+                  ),
+                  child: Text(
+                    badge,
+                    style: const TextStyle(
+                      fontSize: 8,
+                      fontWeight: FontWeight.w800,
+                      color: Color(0xFF141414),
+                    ),
+                  ),
+                ),
+              ),
+          ],
+        ),
+      ),
+    );
+  }
+
+  /// v15 のカメラ右レール。上から Home・シャッター(または投稿確認の操作)・
+  /// 35mm/8mm 切替。
+  Widget _rightRail() {
+    final reviewing = _captured != null;
+    return SizedBox(
+      width: 100,
+      child: Column(
+        children: [
+          const SizedBox(height: 4),
+          _homeButton(),
+          const Spacer(),
+          reviewing ? _reviewButtons() : _shutterButton(),
+          const Spacer(),
+          if (!reviewing) _modeToggle(),
+          const SizedBox(height: 4),
+        ],
+      ),
+    );
+  }
+
+  /// Camera には portrait 用ヘッダーが無いので、戻る導線はこれだけ。
+  /// 撮影確認中・投稿処理中・タイマー中は押しても戻れないようにする
+  /// (縦向き復帰のガードと揃えるため)。
+  Widget _homeButton() {
+    return IgnorePointer(
+      ignoring: _busy,
+      child: Opacity(
+        opacity: _busy ? 0.35 : 1,
+        child: GestureDetector(
+          onTap: widget.onHome,
+          child: Container(
+            width: 40,
+            height: 40,
+            alignment: Alignment.center,
+            decoration: BoxDecoration(
+              shape: BoxShape.circle,
+              color: BloomColors.scrim.withValues(alpha: 0.56),
+              border: Border.all(color: Colors.white.withValues(alpha: 0.18)),
+            ),
+            child:
+                const Icon(Icons.home_outlined, size: 19, color: Colors.white),
+          ),
+        ),
+      ),
+    );
+  }
+
+  Widget _shutterButton() {
+    final isVideo = _mode == PostKind.film8mm;
+    return GestureDetector(
+      onTap: _busy ? null : _onShutterTap,
+      child: Container(
+        width: 68,
+        height: 68,
+        alignment: Alignment.center,
+        decoration: BoxDecoration(
+          shape: BoxShape.circle,
+          color: BloomColors.scrim.withValues(alpha: 0.56),
+          border: Border.all(
+            color: _recording
+                ? BloomColors.heart.withValues(alpha: 0.9)
+                : Colors.white.withValues(alpha: 0.48),
+            width: 2,
+          ),
+        ),
+        child: AnimatedContainer(
+          duration: const Duration(milliseconds: 160),
+          width: isVideo ? 27 : 47,
+          height: isVideo ? 27 : 47,
+          decoration: BoxDecoration(
+            color: isVideo ? const Color(0xFFEE5D64) : const Color(0xFFF3F1EF),
+            borderRadius: BorderRadius.circular(isVideo ? 8 : 999),
+          ),
+        ),
+      ),
+    );
+  }
+
+  Widget _reviewButtons() {
+    return Column(
       mainAxisSize: MainAxisSize.min,
       children: [
-        SizedBox(
-          width: 92,
-          child: taken
-              ? _sideButton('撮り直す', _retake, primary: false)
-              : const SizedBox.shrink(),
+        _railButton(
+          _uploading ? '投稿中…' : '投稿',
+          _uploading ? null : _post,
+          primary: true,
         ),
-        const SizedBox(width: 15),
-        _shutter(),
-        const SizedBox(width: 15),
-        SizedBox(
-          width: 92,
-          child: taken
-              ? _sideButton(
-                  _uploading ? '投稿中…' : '投稿',
-                  _uploading ? null : _post,
-                  primary: true,
-                )
-              : const SizedBox.shrink(),
-        ),
+        const SizedBox(height: 8),
+        _railButton('撮り直す', _uploading ? null : _retake, primary: false),
       ],
     );
   }
 
-  Widget _sideButton(String label, VoidCallback? onTap, {required bool primary}) {
+  Widget _railButton(String label, VoidCallback? onTap, {required bool primary}) {
     return GestureDetector(
       onTap: onTap,
       child: Container(
-        height: 40,
+        width: 84,
+        height: 38,
         alignment: Alignment.center,
         decoration: BoxDecoration(
           color: primary
@@ -429,7 +912,7 @@ class _PostTabState extends State<PostTab> with WidgetsBindingObserver {
         ),
         child: Text(
           label,
-          style: BloomText.labelMd.copyWith(
+          style: BloomText.labelSm.copyWith(
             color: primary ? const Color(0xFF1D0B00) : const Color(0xFFF0EEEE),
             fontWeight: FontWeight.w700,
           ),
@@ -438,69 +921,74 @@ class _PostTabState extends State<PostTab> with WidgetsBindingObserver {
     );
   }
 
-  Widget _shutter() {
-    final isVideo = _mode == PostKind.film8mm;
-    return GestureDetector(
-      onTap: _captured == null ? _shoot : null,
-      child: Container(
-        width: 72,
-        height: 72,
-        alignment: Alignment.center,
-        decoration: BoxDecoration(
-          shape: BoxShape.circle,
-          color: BloomColors.scrim.withValues(alpha: 0.56),
-          border: Border.all(
-            color: _recording
-                ? BloomColors.heart.withValues(alpha: 0.9)
-                : Colors.white.withValues(alpha: 0.48),
-            width: 2,
+  Widget _modeToggle() {
+    return Column(
+      mainAxisSize: MainAxisSize.min,
+      children: [
+        for (final mode in PostKind.values) ...[
+          GestureDetector(
+            onTap: _busy ? null : () => _setMode(mode),
+            child: Container(
+              width: 84,
+              height: 32,
+              alignment: Alignment.center,
+              decoration: BoxDecoration(
+                color: _mode == mode
+                    ? const Color(0xFFF1EFED)
+                    : BloomColors.scrim.withValues(alpha: 0.5),
+                border: Border.all(color: Colors.white.withValues(alpha: 0.15)),
+                borderRadius: BorderRadius.circular(BloomRadius.pill),
+              ),
+              child: Text(
+                mode.wire,
+                style: BloomText.labelSm.copyWith(
+                  fontWeight: FontWeight.w700,
+                  color: _mode == mode
+                      ? const Color(0xFF17181B)
+                      : const Color(0xFFA6A8AF),
+                ),
+              ),
+            ),
           ),
-        ),
-        child: AnimatedContainer(
-          duration: const Duration(milliseconds: 160),
-          width: isVideo ? 29 : 49,
-          height: isVideo ? 29 : 49,
-          decoration: BoxDecoration(
-            color: isVideo ? const Color(0xFFEE5D64) : const Color(0xFFF3F1EF),
-            borderRadius: BorderRadius.circular(isVideo ? 8 : 999),
-          ),
-        ),
+          if (mode != PostKind.values.last) const SizedBox(height: 6),
+        ],
+      ],
+    );
+  }
+}
+
+/// 8mm のセルフタイマー中に表示する、数字を使わないカウントダウン表現。
+class _CountdownRing extends StatelessWidget {
+  const _CountdownRing();
+
+  @override
+  Widget build(BuildContext context) {
+    return Container(
+      width: 46,
+      height: 46,
+      decoration: BoxDecoration(
+        shape: BoxShape.circle,
+        border: Border.all(color: Colors.white54, width: 2),
       ),
     );
   }
 }
 
-class _RecordChip extends StatelessWidget {
-  const _RecordChip();
+/// 録画中インジケーター。数字の録画秒数は出さない(仕様どおり)。
+class _RecordDot extends StatelessWidget {
+  const _RecordDot();
 
   @override
   Widget build(BuildContext context) {
     return Positioned(
-      right: 17,
-      top: 17,
+      right: 14,
+      top: 12,
       child: Container(
-        padding: const EdgeInsets.symmetric(horizontal: 9, vertical: 7),
-        decoration: BoxDecoration(
-          color: BloomColors.scrim.withValues(alpha: 0.66),
-          borderRadius: BorderRadius.circular(BloomRadius.pill),
-        ),
-        child: Row(
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            Container(
-              width: 7,
-              height: 7,
-              decoration: const BoxDecoration(
-                color: Color(0xFFEE5D64),
-                shape: BoxShape.circle,
-              ),
-            ),
-            const SizedBox(width: 6),
-            Text(
-              '2 SEC',
-              style: BloomText.labelSm.copyWith(color: Colors.white),
-            ),
-          ],
+        width: 9,
+        height: 9,
+        decoration: const BoxDecoration(
+          color: Color(0xFFEE5D64),
+          shape: BoxShape.circle,
         ),
       ),
     );

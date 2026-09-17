@@ -3,6 +3,7 @@ import 'package:flutter/material.dart';
 import '../api/bloom_api.dart';
 import '../models/models.dart';
 import '../theme/bloom_theme.dart';
+import '../widgets/film_effects.dart';
 import '../widgets/post_media.dart';
 import '../widgets/remote_image.dart';
 
@@ -82,7 +83,10 @@ class _LogItem extends StatelessWidget {
           child: Stack(
             fit: StackFit.expand,
             children: [
-              PostMedia(api: api, post: post),
+              Film8mmEffects(
+                active: post.kind.isVideo,
+                child: PostMedia(api: api, post: post),
+              ),
               Positioned(
                 right: 12,
                 bottom: 11,
