@@ -40,13 +40,10 @@ class _AddFriendTabState extends State<AddFriendTab> {
   ProximityStatus? _blockedBy;
   StreamSubscription<ProximityStatus>? _statusSub;
 
-  /// この画面を開いている間は、素早く見つかるよう短い間隔で探し続ける
-  /// （バックグラウンドの15秒間隔とは別に、明示的に探している間だけ速くする）。
-  ///
-  /// Android は短時間に何度も start/stopScan を繰り返すアプリを
-  /// 「scanning too frequently」として黙ってスキャンを無効化する
-  /// （目安として30秒あたり5回程度）。バックグラウンドの15秒間隔の
-  /// スキャンと合算されると上限ギリギリになるため、様子を見て調整する。
+  /// この画面を開いている間は、サーバーへの解決要求（フレンド判定）を
+  /// 定期的にやり直して一覧を最新化する。BLE のスキャン自体は
+  /// BleProximityService が常時回しているので、ここで叩き直しても
+  /// スキャンの start/stop は発生しない。
   Timer? _autoSearchTimer;
   bool _searchInFlight = false;
 

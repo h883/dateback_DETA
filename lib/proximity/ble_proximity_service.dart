@@ -25,9 +25,18 @@ class BleProximityService implements ProximityService {
 
   StreamSubscription<List<ScanResult>>? _scanSub;
   StreamSubscription<BluetoothAdapterState>? _adapterSub;
-  Timer? _rescanTimer;
   bool _advertising = false;
   String? _currentBeaconId;
+
+  /// 常時スキャン中に見つかった相手（beaconId → 直近の検知情報）。
+  /// フォアグラウンドの間しか動かさない（[ProximityService.start] 参照）ので
+  /// バッテリー消費は常時スキャンでも許容できる。
+  final _liveFound = <String, NearbyPeer>{};
+  Timer? _liveEmitTimer;
+  bool _continuousScanActive = false;
+
+  /// この時間見つからなかった相手は「もういない」として一覧から外す。
+  static const _peerTtl = Duration(seconds: 10);
 
   /// dispose() 後は、待機していた非同期処理が復帰しても何もしない。
   /// 待たずに閉じた StreamController に書き込むとクラッシュするため。
@@ -72,34 +81,66 @@ class BleProximityService implements ProximityService {
     }
 
     await _advertise(myBeaconId);
-
-    // 継続検知。スキャンは電池を食うので、短く回して間を空ける。
-    _rescanTimer?.cancel();
-    _rescanTimer = Timer.periodic(const Duration(seconds: 15), (_) {
-      unawaited(scanOnce());
-    });
-    unawaited(scanOnce());
+    await _startContinuousScan();
   }
 
-  /// 広告の停止・再開が進行中かどうか。スキャン開始側もこれを待つ。
-  Future<void>? _advertiseRestartInFlight;
+  /// スキャンを止めずに回し続ける。すれ違いが一瞬でも取りこぼしにくくする。
+  ///
+  /// Android の「scanning too frequently」制限は start/stop を繰り返す
+  /// 回数に対するものなので、1度 startScan したまま止めない分には
+  /// むしろ引っかかりにくい。
+  Future<void> _startContinuousScan() async {
+    if (_disposed || _continuousScanActive) return;
+    if (FlutterBluePlus.adapterStateNow == BluetoothAdapterState.off) {
+      _emitStatus(ProximityStatus.bluetoothOff);
+      return;
+    }
+    if (!await _ensurePermissions()) {
+      _emitStatus(ProximityStatus.permissionDenied);
+      return;
+    }
+    if (_disposed) return;
+
+    _emitStatus(ProximityStatus.scanning);
+    await _scanSub?.cancel();
+    _scanSub = FlutterBluePlus.scanResults.listen((results) {
+      final now = DateTime.now();
+      for (final r in results) {
+        final beaconId = _beaconIdOf(r);
+        if (beaconId == null) continue;
+        _liveFound[beaconId] =
+            NearbyPeer(beaconId: beaconId, seenAt: now, rssi: r.rssi);
+      }
+    });
+
+    try {
+      // timeout を指定しなければ stopScan() するまで回り続ける。
+      await FlutterBluePlus.startScan(withServices: [serviceUuid]);
+      _continuousScanActive = true;
+    } catch (_) {
+      _continuousScanActive = false;
+    }
+
+    _liveEmitTimer?.cancel();
+    _liveEmitTimer = Timer.periodic(const Duration(seconds: 2), (_) {
+      _pruneAndEmit();
+    });
+  }
+
+  void _pruneAndEmit() {
+    if (_disposed) return;
+    final cutoff = DateTime.now().subtract(_peerTtl);
+    _liveFound.removeWhere((_, p) => p.seenAt.isBefore(cutoff));
+    _emitPeers(_liveFound.values.toList());
+  }
 
   /// サーバー側で beaconId がローテーションされたら、広告を新しい値で
   /// 出し直す。盗聴された旧IDをいつまでも送り続けないようにするため。
-  ///
-  /// アドバタイズの停止・再開は Bluetooth スタック全体に影響し、進行中の
-  /// スキャン結果を乱すことがあるため、スキャンが終わるのを待ってから行う。
+  /// スキャンは止めていないので、広告の付け替えだけで完結する。
   @override
   Future<void> updateBeaconId(String myBeaconId) async {
     if (_disposed || _currentBeaconId == myBeaconId) return;
-    final inFlight = _scanInFlight;
-    if (inFlight != null) await inFlight;
-    if (_disposed) return;
-
-    final restart = _restartAdvertising(myBeaconId);
-    _advertiseRestartInFlight = restart;
-    await restart;
-    _advertiseRestartInFlight = null;
+    await _restartAdvertising(myBeaconId);
   }
 
   Future<void> _restartAdvertising(String myBeaconId) async {
@@ -142,78 +183,23 @@ class BleProximityService implements ProximityService {
     }
   }
 
-  /// 進行中のスキャン。バックグラウンドの定期スキャンと、フレンド追加画面
-  /// の手動スキャンが同じインスタンスを共有しているため、同時に
-  /// FlutterBluePlus.startScan() を叩き合うと _scanSub の奪い合いになり
-  /// 検知が不安定になる。進行中なら新しく始めず、それに相乗りする。
-  Future<List<NearbyPeer>>? _scanInFlight;
-
+  /// 手動検索（フレンド追加画面）用。常時スキャンが既に回っているので、
+  /// その場のスナップショットを返すだけでよい。start() 直後などまだ何も
+  /// 拾っていなければ、電波を拾う時間を少し確保してから返す。
   @override
   Future<List<NearbyPeer>> scanOnce({
     Duration timeout = const Duration(seconds: 4),
-  }) {
-    if (_disposed) return Future.value(const []);
-    final inFlight = _scanInFlight;
-    if (inFlight != null) return inFlight;
-
-    final future = _scanOnceImpl(timeout: timeout);
-    _scanInFlight = future;
-    future.whenComplete(() => _scanInFlight = null);
-    return future;
-  }
-
-  Future<List<NearbyPeer>> _scanOnceImpl({
-    Duration timeout = const Duration(seconds: 4),
   }) async {
-    final restarting = _advertiseRestartInFlight;
-    if (restarting != null) await restarting;
     if (_disposed) return const [];
-
-    if (FlutterBluePlus.adapterStateNow == BluetoothAdapterState.off) {
-      _emitStatus(ProximityStatus.bluetoothOff);
-      return const [];
+    if (!_continuousScanActive) {
+      await _startContinuousScan();
     }
-    if (!await _ensurePermissions()) {
-      _emitStatus(ProximityStatus.permissionDenied);
-      return const [];
+    if (_liveFound.isEmpty) {
+      await Future.delayed(const Duration(seconds: 2));
     }
     if (_disposed) return const [];
-
-    _emitStatus(ProximityStatus.scanning);
-    final found = <String, NearbyPeer>{};
-
-    await _scanSub?.cancel();
-    _scanSub = FlutterBluePlus.scanResults.listen((results) {
-      for (final r in results) {
-        final beaconId = _beaconIdOf(r);
-        if (beaconId == null) continue;
-        found[beaconId] = NearbyPeer(
-          beaconId: beaconId,
-          seenAt: DateTime.now(),
-          rssi: r.rssi,
-        );
-      }
-    });
-
-    try {
-      await FlutterBluePlus.startScan(
-        withServices: [serviceUuid],
-        timeout: timeout,
-      );
-      await FlutterBluePlus.isScanning.where((s) => s == false).first;
-    } catch (_) {
-      // スキャンに失敗したら見つからなかった扱いにする。
-    } finally {
-      await _scanSub?.cancel();
-      _scanSub = null;
-      _emitStatus(ProximityStatus.idle);
-    }
-
-    final peers = found.values.toList();
-    // 0件でも必ず流す。ここを isNotEmpty で絞ると、相手がいなくなったことが
-    // 購読側に伝わらず、最後に見つかった相手がずっと「いる」ままになる。
-    _emitPeers(peers);
-    return peers;
+    _pruneAndEmit();
+    return _liveFound.values.toList();
   }
 
   /// 広告から beaconId を取り出す。本SNS の広告でなければ null。
@@ -239,8 +225,10 @@ class BleProximityService implements ProximityService {
 
   @override
   Future<void> stop() async {
-    _rescanTimer?.cancel();
-    _rescanTimer = null;
+    _liveEmitTimer?.cancel();
+    _liveEmitTimer = null;
+    _liveFound.clear();
+    _continuousScanActive = false;
     await _scanSub?.cancel();
     _scanSub = null;
     try {
@@ -263,7 +251,7 @@ class BleProximityService implements ProximityService {
   @override
   void dispose() {
     _disposed = true;
-    _rescanTimer?.cancel();
+    _liveEmitTimer?.cancel();
     _scanSub?.cancel();
     _adapterSub?.cancel();
     _status.close();
