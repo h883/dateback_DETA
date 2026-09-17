@@ -40,6 +40,11 @@ class _AddFriendTabState extends State<AddFriendTab> {
   ProximityStatus? _blockedBy;
   StreamSubscription<ProximityStatus>? _statusSub;
 
+  /// この画面を開いている間は、素早く見つかるよう短い間隔で探し続ける
+  /// （バックグラウンドの15秒間隔とは別に、明示的に探している間だけ速くする）。
+  Timer? _autoSearchTimer;
+  bool _searchInFlight = false;
+
   @override
   void initState() {
     super.initState();
@@ -55,16 +60,21 @@ class _AddFriendTabState extends State<AddFriendTab> {
       }
     });
     _search();
+    _autoSearchTimer = Timer.periodic(const Duration(seconds: 5), (_) {
+      if (!_searchInFlight) _search();
+    });
   }
 
   @override
   void dispose() {
+    _autoSearchTimer?.cancel();
     _statusSub?.cancel();
     super.dispose();
   }
 
   /// この画面を開いている間だけ非フレンドを探す（仕様書 7.2）。
   Future<void> _search() async {
+    _searchInFlight = true;
     setState(() {
       _searching = true;
       _blockedBy = null;
@@ -94,6 +104,8 @@ class _AddFriendTabState extends State<AddFriendTab> {
       if (!mounted) return;
       setState(() => _searching = false);
       widget.onToast('近くのユーザーを探せませんでした');
+    } finally {
+      _searchInFlight = false;
     }
   }
 

@@ -47,6 +47,10 @@ abstract class ProximityService {
   /// 仕様書 18.1 のとおりフォアグラウンドの間だけ動かす想定。
   Future<void> start({required String myBeaconId});
 
+  /// サーバー側で beaconId がローテーションされたときに、広告中の値を
+  /// 差し替える。start() 前や値が変わっていないときは何もしない。
+  Future<void> updateBeaconId(String myBeaconId);
+
   Future<void> stop();
 
   /// 一度だけスキャンして、見つかった相手を返す（仕様書 10.3 手動検索）。
@@ -85,6 +89,9 @@ class FakeProximityService implements ProximityService {
   Future<void> start({required String myBeaconId}) async {
     _status.add(_statusFor(scenario));
   }
+
+  @override
+  Future<void> updateBeaconId(String myBeaconId) async {}
 
   @override
   Future<void> stop() async => _status.add(ProximityStatus.idle);

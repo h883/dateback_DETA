@@ -73,28 +73,49 @@ function newBeaconId(): string {
 }
 
 /**
- * beacon_id が未発行なら採番する。既存ユーザーも初回アクセスで埋まる。
+ * beacon_id を固定にしていると、一度電波を盗聴されただけで無期限に
+ * なりすまし・接触記録の偽装ができてしまう。定期的にローテーションし、
+ * 直前世代（beacon_id_prev）だけスキャンの取りこぼし防止の猶予として残す。
+ * 実効的な有効期間は最大でも 2 世代分（このTTLの2倍）。
+ */
+const BEACON_ROTATION_MS = 2 * 60 * 1000;
+
+/**
+ * beacon_id が未発行なら採番、期限切れならローテーションする。
  * 一意制約に当たったら引き直す。
  */
 async function ensureBeaconId(env: Env, uid: string): Promise<string | null> {
-  const row = await env.DB.prepare('SELECT beacon_id FROM users WHERE uid = ?')
+  const row = await env.DB.prepare(
+    'SELECT beacon_id, beacon_rotated_at FROM users WHERE uid = ?',
+  )
     .bind(uid)
-    .first<{ beacon_id: string | null }>();
+    .first<{ beacon_id: string | null; beacon_rotated_at: number | null }>();
   if (!row) return null;
-  if (row.beacon_id) return row.beacon_id;
+
+  const needsRotation =
+    !row.beacon_id ||
+    !row.beacon_rotated_at ||
+    now() - row.beacon_rotated_at >= BEACON_ROTATION_MS;
+  if (!needsRotation) return row.beacon_id;
 
   for (let attempt = 0; attempt < 5; attempt++) {
     const candidate = newBeaconId();
     try {
-      await env.DB.prepare('UPDATE users SET beacon_id = ? WHERE uid = ?')
-        .bind(candidate, uid)
+      await env.DB.prepare(
+        `UPDATE users
+            SET beacon_id_prev = beacon_id,
+                beacon_id = ?,
+                beacon_rotated_at = ?
+          WHERE uid = ?`,
+      )
+        .bind(candidate, now(), uid)
         .run();
       return candidate;
     } catch {
       // UNIQUE 衝突。引き直す。
     }
   }
-  return null;
+  return row.beacon_id;
 }
 
 interface PostRow {
@@ -756,10 +777,10 @@ async function handleResolveBeacons(
                    OR (f.requester = u.uid AND f.addressee = ?1))
             ) AS is_friend
        FROM users u
-      WHERE u.beacon_id IN (${placeholders})
+      WHERE (u.beacon_id IN (${placeholders}) OR u.beacon_id_prev IN (${placeholders}))
         AND u.uid <> ?1`,
   )
-    .bind(user.uid, ...ids)
+    .bind(user.uid, ...ids, ...ids)
     .all<UserRow & { is_friend: number }>();
 
   const friends = results.filter((r) => r.is_friend === 1).map(toProfile);
@@ -824,7 +845,9 @@ async function handleProximity(
   // BLE で拾えるのは beaconId だけ。uid への解決はここで行う。
   let peer = body?.peerUid ?? null;
   if (!peer && body?.beaconId) {
-    const row = await env.DB.prepare('SELECT uid FROM users WHERE beacon_id = ?')
+    const row = await env.DB.prepare(
+      'SELECT uid FROM users WHERE beacon_id = ?1 OR beacon_id_prev = ?1',
+    )
       .bind(body.beaconId)
       .first<{ uid: string }>();
     if (!row) return fail(404, 'unknown_beacon', '相手が特定できませんでした');
