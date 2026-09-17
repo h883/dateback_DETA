@@ -10,6 +10,7 @@ import '../theme/bloom_theme.dart';
 import 'tabs/add_friend_tab.dart';
 import 'tabs/home_tab.dart';
 import 'tabs/post_tab.dart';
+import 'notifications_screen.dart';
 import 'tabs/profile_tab.dart';
 
 /// 仕様書 8 の画面配置。左から 投稿 / ホーム / プロフィール / フレンド追加。
@@ -62,6 +63,10 @@ class _MainShellState extends State<MainShell> with WidgetsBindingObserver {
   /// 横向きへの切り替わりを一度だけ拾うために、前回の向きを覚えておく。
   Orientation? _lastOrientation;
 
+  /// トップバーのバッジに出す未読件数。
+  int _unreadCount = 0;
+  Timer? _unreadTimer;
+
   /// 画面に出すトースト。仕様書 14 のとおり、どの画面にいても出す。
   String? _toast;
   int _toastToken = 0;
@@ -74,6 +79,35 @@ class _MainShellState extends State<MainShell> with WidgetsBindingObserver {
       if (mounted) _lastOrientation = _currentOrientation();
     });
     _startProximity();
+    _refreshUnread();
+    // フレンド申請などは相手の操作で増えるので、開いている間は定期的に見に行く。
+    _unreadTimer = Timer.periodic(
+      const Duration(seconds: 30),
+      (_) => _refreshUnread(),
+    );
+  }
+
+  Future<void> _refreshUnread() async {
+    try {
+      final feed = await widget.api.fetchNotifications();
+      if (!mounted) return;
+      setState(() => _unreadCount = feed.unreadCount);
+    } catch (_) {
+      // 取れなくてもバッジを出さないだけ。
+    }
+  }
+
+  void _openNotifications() {
+    Navigator.of(context).push(
+      MaterialPageRoute<void>(
+        builder: (_) => NotificationsScreen(
+          api: widget.api,
+          onRead: () {
+            if (mounted) setState(() => _unreadCount = 0);
+          },
+        ),
+      ),
+    );
   }
 
   Orientation _currentOrientation() {
@@ -100,6 +134,7 @@ class _MainShellState extends State<MainShell> with WidgetsBindingObserver {
   @override
   void dispose() {
     WidgetsBinding.instance.removeObserver(this);
+    _unreadTimer?.cancel();
     _peerSub?.cancel();
     _proximity.dispose();
     _pager.dispose();
@@ -142,6 +177,7 @@ class _MainShellState extends State<MainShell> with WidgetsBindingObserver {
         final result = await widget.api.reportProximity(peerUid: friend.uid);
         if (result.exchanged && mounted) {
           showToast('${result.peerName}さんとデータを共有しました');
+          unawaited(_refreshUnread());
         }
       }
       for (final peer in fresh) {
@@ -259,11 +295,58 @@ class _MainShellState extends State<MainShell> with WidgetsBindingObserver {
               ),
             ],
           ),
-          Text(
-            _tab.label,
-            style: BloomText.labelMd.copyWith(color: BloomColors.secondary),
+          Row(
+            children: [
+              Text(
+                _tab.label,
+                style: BloomText.labelMd.copyWith(color: BloomColors.secondary),
+              ),
+              const SizedBox(width: 10),
+              _notificationButton(),
+            ],
           ),
         ],
+      ),
+    );
+  }
+
+  Widget _notificationButton() {
+    return GestureDetector(
+      onTap: _openNotifications,
+      behavior: HitTestBehavior.opaque,
+      child: Padding(
+        padding: const EdgeInsets.symmetric(horizontal: 2, vertical: 6),
+        child: Stack(
+          clipBehavior: Clip.none,
+          children: [
+            const Icon(
+              Icons.notifications_none,
+              size: 22,
+              color: BloomColors.secondary,
+            ),
+            if (_unreadCount > 0)
+              Positioned(
+                right: -3,
+                top: -3,
+                child: Container(
+                  padding: const EdgeInsets.symmetric(horizontal: 4),
+                  constraints: const BoxConstraints(minWidth: 15),
+                  height: 15,
+                  alignment: Alignment.center,
+                  decoration: BoxDecoration(
+                    color: BloomColors.primaryContainer,
+                    borderRadius: BorderRadius.circular(BloomRadius.pill),
+                  ),
+                  child: Text(
+                    _unreadCount > 99 ? '99+' : '$_unreadCount',
+                    style: BloomText.labelSm.copyWith(
+                      color: BloomColors.onPrimaryContainer,
+                    ),
+                  ),
+                ),
+              ),
+          ],
+        ),
       ),
     );
   }
