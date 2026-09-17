@@ -1,3 +1,5 @@
+import 'dart:async';
+
 import 'package:firebase_auth/firebase_auth.dart';
 import 'package:flutter/material.dart';
 import 'package:google_sign_in/google_sign_in.dart';
@@ -31,6 +33,22 @@ class _AuthGateState extends State<AuthGate> {
   String? _error;
   User? _lastUid;
 
+  /// authStateChanges() が一瞬 null を流すことがある（トークンの裏側での
+  /// 更新など）。即座にサインアウト扱いにすると MainShell が壊れて作り
+  /// 直され、ホームタブに戻ってしまう。少し待って本当に null のままなら
+  /// サインアウトとみなす。
+  User? _lastSeenUser;
+  Timer? _signOutDebounce;
+  bool _confirmedSignedOut = false;
+
+  static const _signOutDebounceDuration = Duration(milliseconds: 1200);
+
+  @override
+  void dispose() {
+    _signOutDebounce?.cancel();
+    super.dispose();
+  }
+
   Future<void> _loadProfile(User user) async {
     if (_lastUid?.uid == user.uid && _profileLoaded == true) return;
     _lastUid = user;
@@ -61,11 +79,15 @@ class _AuthGateState extends State<AuthGate> {
     await GoogleSignIn().signOut();
     await FirebaseAuth.instance.signOut();
     if (!mounted) return;
+    _signOutDebounce?.cancel();
+    _signOutDebounce = null;
     setState(() {
       _profile = null;
       _profileLoaded = null;
       _lastUid = null;
       _error = null;
+      _lastSeenUser = null;
+      _confirmedSignedOut = true;
     });
   }
 
@@ -74,11 +96,28 @@ class _AuthGateState extends State<AuthGate> {
     return StreamBuilder<User?>(
       stream: FirebaseAuth.instance.authStateChanges(),
       builder: (context, snapshot) {
-        if (snapshot.connectionState == ConnectionState.waiting) {
+        if (snapshot.connectionState == ConnectionState.waiting &&
+            _lastSeenUser == null) {
           return const _Splash();
         }
 
-        final user = snapshot.data;
+        final streamUser = snapshot.data;
+        if (streamUser != null) {
+          _signOutDebounce?.cancel();
+          _signOutDebounce = null;
+          _confirmedSignedOut = false;
+          _lastSeenUser = streamUser;
+        } else if (_lastSeenUser != null &&
+            !_confirmedSignedOut &&
+            _signOutDebounce == null) {
+          // 一瞬の null かもしれないので、少し待ってから確定させる。
+          _signOutDebounce = Timer(_signOutDebounceDuration, () {
+            _signOutDebounce = null;
+            if (mounted) setState(() => _confirmedSignedOut = true);
+          });
+        }
+
+        final user = _confirmedSignedOut ? null : (streamUser ?? _lastSeenUser);
         if (user == null) {
           // サインアウト直後に古いプロフィールが残らないようにする。
           if (_profileLoaded != null) {

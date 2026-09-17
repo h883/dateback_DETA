@@ -42,6 +42,11 @@ class _AddFriendTabState extends State<AddFriendTab> {
 
   /// この画面を開いている間は、素早く見つかるよう短い間隔で探し続ける
   /// （バックグラウンドの15秒間隔とは別に、明示的に探している間だけ速くする）。
+  ///
+  /// Android は短時間に何度も start/stopScan を繰り返すアプリを
+  /// 「scanning too frequently」として黙ってスキャンを無効化する
+  /// （目安として30秒あたり5回程度）。バックグラウンドの15秒間隔の
+  /// スキャンと合算されると上限ギリギリになるため、様子を見て調整する。
   Timer? _autoSearchTimer;
   bool _searchInFlight = false;
 
@@ -60,7 +65,7 @@ class _AddFriendTabState extends State<AddFriendTab> {
       }
     });
     _search();
-    _autoSearchTimer = Timer.periodic(const Duration(seconds: 5), (_) {
+    _autoSearchTimer = Timer.periodic(const Duration(seconds: 10), (_) {
       if (!_searchInFlight) _search();
     });
   }
