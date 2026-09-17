@@ -40,11 +40,18 @@ class _AddFriendTabState extends State<AddFriendTab> {
   ProximityStatus? _blockedBy;
   StreamSubscription<ProximityStatus>? _statusSub;
 
-  /// この画面を開いている間は、サーバーへの解決要求（フレンド判定）を
-  /// 定期的にやり直して一覧を最新化する。BLE のスキャン自体は
-  /// BleProximityService が常時回しているので、ここで叩き直しても
-  /// スキャンの start/stop は発生しない。
-  Timer? _autoSearchTimer;
+  /// BLE のスキャンは常時回っているが、電波の受信にはムラがあり、
+  /// 同じ相手でも一瞬 _peerTtl（BleProximityService 側）を超えて
+  /// 見失っては再検知する、を繰り返すことがある。「消えた」ことでは
+  /// 再検索せず、一度も見ていない beaconId が新しく現れたときだけ
+  /// サーバーに解決要求を投げる（そうしないと数秒〜十数秒おきに
+  /// 検索が走り続けてしまう）。
+  StreamSubscription<List<NearbyPeer>>? _peersSub;
+  final _seenPeerBeaconIds = <String>{};
+
+  /// フレンド申請の着信はBLEと無関係に起こるので、念のため低頻度で
+  /// 見に行く（変化駆動だけだと相手から届いた申請に気付けない）。
+  Timer? _fallbackTimer;
   bool _searchInFlight = false;
 
   @override
@@ -61,26 +68,45 @@ class _AddFriendTabState extends State<AddFriendTab> {
         });
       }
     });
+    _peersSub = widget.proximity.peers.listen((peers) {
+      final newOnes = peers
+          .map((p) => p.beaconId)
+          .where((id) => !_seenPeerBeaconIds.contains(id))
+          .toList();
+      if (newOnes.isEmpty) return;
+      _seenPeerBeaconIds.addAll(newOnes);
+      if (!_searchInFlight) _search(silent: true);
+    });
     _search();
-    _autoSearchTimer = Timer.periodic(const Duration(seconds: 10), (_) {
-      if (!_searchInFlight) _search();
+    // フレンド申請の着信チェックも兼ねた定期更新。値が変わっていなければ
+    // 画面には何も見えないよう、スピナーは出さない（毎回出すと、何も
+    // 起きていないのに「探しています」が点滅して見える）。
+    _fallbackTimer = Timer.periodic(const Duration(seconds: 20), (_) {
+      if (!_searchInFlight) _search(silent: true);
     });
   }
 
   @override
   void dispose() {
-    _autoSearchTimer?.cancel();
+    _fallbackTimer?.cancel();
+    _peersSub?.cancel();
     _statusSub?.cancel();
     super.dispose();
   }
 
   /// この画面を開いている間だけ非フレンドを探す（仕様書 7.2）。
-  Future<void> _search() async {
+  ///
+  /// [silent] のときはバックグラウンドでの定期更新なので、スピナーは
+  /// 出さない。初回表示と、ユーザーが「再試行」等を押したときだけ
+  /// スピナーを見せる。
+  Future<void> _search({bool silent = false}) async {
     _searchInFlight = true;
-    setState(() {
-      _searching = true;
-      _blockedBy = null;
-    });
+    if (!silent) {
+      setState(() {
+        _searching = true;
+        _blockedBy = null;
+      });
+    }
     try {
       final requests = await widget.api.fetchFriendRequests();
 
@@ -101,11 +127,12 @@ class _AddFriendTabState extends State<AddFriendTab> {
           ..clear()
           ..addAll(requests.outgoing.map((p) => p.uid));
         _searching = false;
+        _blockedBy = null;
       });
     } catch (e) {
       if (!mounted) return;
       setState(() => _searching = false);
-      widget.onToast('近くのユーザーを探せませんでした');
+      if (!silent) widget.onToast('近くのユーザーを探せませんでした');
     } finally {
       _searchInFlight = false;
     }
