@@ -13,6 +13,7 @@ import '../../models/models.dart';
 import '../../theme/bloom_theme.dart';
 import '../../widgets/film_effects.dart';
 import '../drafts_sheet.dart';
+import 'photo_filter.dart';
 
 /// 投稿処理の結果。MainShell はこれを見て Home への遷移・成功/失敗の
 /// バナー表示・(失敗時の)再試行/下書き保存を行う。
@@ -47,7 +48,7 @@ class PostFailure extends PostOutcome {
 }
 
 /// 撮影フレームの縦横比。ユーザーが見ている範囲と投稿される範囲を一致させる
-/// ため、静止画はこの比率へ中央切り出しする([_cropTo3x2])。
+/// ため、静止画はこの比率へ中央切り出しする([_cropAndFilterTo3x2])。
 ///
 /// 動画については camera プラグインに「3:2 で録画ファイルそのものを書き出す」
 /// 手段が無く、切り出しには動画の再エンコードが要る(=重い native/FFmpeg
@@ -56,11 +57,28 @@ class PostFailure extends PostOutcome {
 /// 比率のまま(Phase 7 の制約として報告する)。
 const _targetAspect = 3 / 2;
 
-/// 撮影した静止画を中央から 3:2 へ切り出す。[compute] で別 isolate で
-/// 実行するためのトップレベル関数。
-Uint8List _cropTo3x2(Uint8List jpegBytes) {
-  final decoded = img.decodeImage(jpegBytes);
-  if (decoded == null) return jpegBytes;
+/// [_cropAndFilterTo3x2] へ渡す引数。[compute] は引数を1つしか渡せないため
+/// まとめておく。
+class _CropAndFilterParams {
+  const _CropAndFilterParams(this.jpegBytes, this.filterMatrix);
+
+  final Uint8List jpegBytes;
+
+  /// シャッターが切られた瞬間に選択されていた [PhotoFilter.matrix]
+  /// (v15 の35mm filter swipe)。呼び出し側で確定させてから渡すことで、
+  /// 処理中にユーザーがフィルターを変えても結果へ混ざらないようにする。
+  final List<double> filterMatrix;
+}
+
+/// 撮影した静止画を中央から 3:2 へ切り出し、選択中の35mmフィルターを
+/// 焼き込む。[compute] で別 isolate で実行するためのトップレベル関数。
+///
+/// ライブプレビューは Flutter の `ColorFilter.matrix` で同じ matrix を
+/// 見せているだけなので、ここで実際のピクセルへ同じ値を適用することで、
+/// プレビューと投稿される JPEG の見た目を一致させる([applyColorMatrix])。
+Uint8List _cropAndFilterTo3x2(_CropAndFilterParams params) {
+  final decoded = img.decodeImage(params.jpegBytes);
+  if (decoded == null) return params.jpegBytes;
   // EXIF の回転情報をピクセルへ焼き込んでから切り出す
   // (焼き込まないと端末によっては横倒しのまま切り出してしまう)。
   final oriented = img.bakeOrientation(decoded);
@@ -78,6 +96,7 @@ Uint8List _cropTo3x2(Uint8List jpegBytes) {
   final y = ((h - cropH) / 2).round();
   final cropped =
       img.copyCrop(oriented, x: x, y: y, width: cropW, height: cropH);
+  applyColorMatrix(cropped, params.filterMatrix);
   return img.encodeJpg(cropped, quality: 92);
 }
 
@@ -95,6 +114,7 @@ class PostTab extends StatefulWidget {
     required this.onBusyChanged,
     required this.onCaptureLocation,
     required this.active,
+    required this.onFilterGestureActive,
   });
 
   final BloomApi api;
@@ -121,6 +141,11 @@ class PostTab extends StatefulWidget {
   /// 単純な bool)。下書き件数を「Camera 再表示」のタイミングで読み直す
   /// ためだけに使う。
   final bool active;
+
+  /// 35mm フィルタースワイプ中かどうかを MainShell へ伝える。MainShell は
+  /// これを見て、その間だけ PageView(Camera ← Home → Profile)の横スワイプ
+  /// navigation を止める(既存のタブ切替ジェスチャーと衝突させないため)。
+  final void Function(bool active) onFilterGestureActive;
 
   @override
   State<PostTab> createState() => _PostTabState();
@@ -165,6 +190,14 @@ class _PostTabState extends State<PostTab> with WidgetsBindingObserver {
   /// Camera の下書きアイコンに出す件数。0件なら [_leftTools] 側で
   /// アイコン自体を出さない。
   int _draftCount = 0;
+
+  /// 35mm 撮影の色調フィルター(v15 の filter swipe)。8mm には使わない。
+  /// 永続化はしない(Camera を作り直せば Neutral に戻る程度で十分)。
+  PhotoFilter _filter = PhotoFilter.neutral;
+
+  /// フィルタースワイプの累積横移動量。
+  double _filterDragAccum = 0;
+  static const _filterSwipeThreshold = 45.0;
 
   FlashMode _flashMode = FlashMode.off;
 
@@ -468,10 +501,16 @@ class _PostTabState extends State<PostTab> with WidgetsBindingObserver {
     }
   }
 
-  /// 撮影 → 3:2 へ中央切り出し(見えている範囲と投稿される範囲を一致させる)。
-  /// takePicture() 開始からクロップ完了まで一貫して busy にする
-  /// (この間にシャッター再押下や縦向き復帰で Camera を閉じられないように)。
+  /// 撮影 → 3:2 へ中央切り出し + フィルター焼き込み(見えている範囲・見た目と
+  /// 投稿される範囲・色を一致させる)。takePicture() 開始からクロップ完了
+  /// まで一貫して busy にする(この間にシャッター再押下や縦向き復帰で
+  /// Camera を閉じられないように)。
   Future<void> _take35mm(CameraController controller) async {
+    // シャッターを押した瞬間のフィルターをこの1枚へ固定する。以降に
+    // スワイプで _filter が変わっても、この撮影結果には混ざらない
+    // (フィルタースワイプ自体も busy 中は受け付けない設計と合わせて二重に
+    // 安全にしてある)。
+    final filter = _filter;
     setState(() => _capturing = true);
     _reportBusy();
     // 画像処理と並行して進めておく(投稿確認画面の表示を位置取得で
@@ -486,7 +525,10 @@ class _PostTabState extends State<PostTab> with WidgetsBindingObserver {
         _cropping = true;
       });
       _reportBusy();
-      final cropped = await compute(_cropTo3x2, raw);
+      final cropped = await compute(
+        _cropAndFilterTo3x2,
+        _CropAndFilterParams(raw, filter.matrix),
+      );
       if (!mounted) return;
       setState(() {
         _cropping = false;
@@ -635,10 +677,49 @@ class _PostTabState extends State<PostTab> with WidgetsBindingObserver {
     return Row(
       children: [
         _leftTools(),
-        Expanded(child: Center(child: _previewFrame(controller))),
+        Expanded(child: Center(child: _filterSwipeArea(controller))),
         _rightRail(),
       ],
     );
+  }
+
+  /// 35mm・ライブプレビュー中(撮影確認中でない)だけ、横スワイプで
+  /// フィルターを切り替えられるようにする。
+  ///
+  /// このエリア内でのドラッグは、開始した瞬間に
+  /// [PostTab.onFilterGestureActive] で MainShell へ知らせ、MainShell 側で
+  /// PageView(Camera ← Home → Profile)の横スワイプ navigation を一時的に
+  /// 止めてもらう(既存のタブ切替ジェスチャーと衝突しないようにするため)。
+  /// 8mm・撮影確認中・投稿処理中などは対象外にし、その間は普段どおり
+  /// PageView のスワイプへ委ねる。
+  Widget _filterSwipeArea(CameraController controller) {
+    final preview = _previewFrame(controller);
+    if (_mode != PostKind.film35mm || _busy) return preview;
+
+    return GestureDetector(
+      behavior: HitTestBehavior.opaque,
+      onHorizontalDragStart: (_) {
+        _filterDragAccum = 0;
+        widget.onFilterGestureActive(true);
+      },
+      onHorizontalDragUpdate: (details) {
+        _filterDragAccum += details.delta.dx;
+      },
+      onHorizontalDragEnd: (_) {
+        widget.onFilterGestureActive(false);
+        if (_filterDragAccum.abs() > _filterSwipeThreshold) {
+          _changeFilter(_filterDragAccum < 0 ? 1 : -1);
+        }
+      },
+      onHorizontalDragCancel: () => widget.onFilterGestureActive(false),
+      child: preview,
+    );
+  }
+
+  void _changeFilter(int delta) {
+    final values = PhotoFilter.values;
+    final next = (values.indexOf(_filter) + delta) % values.length;
+    setState(() => _filter = values[(next + values.length) % values.length]);
   }
 
   /// 3:2 の撮影フレーム。見えている範囲と投稿される範囲を一致させる中心。
@@ -675,6 +756,15 @@ class _PostTabState extends State<PostTab> with WidgetsBindingObserver {
               if (_recording) const _RecordDot(),
               Positioned(right: 12, bottom: 10, child: _stamp()),
               if (_countdownRemaining != null) _countdownOverlay(),
+              if (_mode == PostKind.film35mm &&
+                  _stillPreview == null &&
+                  !_cropping)
+                Positioned(
+                  left: 0,
+                  right: 0,
+                  bottom: 26,
+                  child: IgnorePointer(child: _filterDots()),
+                ),
             ],
           ),
         ),
@@ -699,9 +789,20 @@ class _PostTabState extends State<PostTab> with WidgetsBindingObserver {
     );
   }
 
-  /// 8mm はセピア寄り・彩度低めにして、モックの質感に寄せる。
+  /// 35mm は選択中の [PhotoFilter](v15 filter swipe)を、8mm は既存どおり
+  /// セピア寄り・彩度低めの質感を、それぞれライブプレビューへ適用する。
+  ///
+  /// 35mm 側は [PhotoFilter.matrix] をそのまま `ColorFilter.matrix` へ渡す
+  /// だけなので、撮影時に同じ matrix でピクセルへ焼き込む
+  /// [applyColorMatrix] と常に同じ見た目になる。
   Widget _previewFilter(Widget child) {
-    if (_mode == PostKind.film35mm) return child;
+    if (_mode == PostKind.film35mm) {
+      if (_filter == PhotoFilter.neutral) return child;
+      return ColorFiltered(
+        colorFilter: ColorFilter.matrix(_filter.matrix),
+        child: child,
+      );
+    }
     return ColorFiltered(
       colorFilter: const ColorFilter.matrix(<double>[
         0.72, 0.21, 0.07, 0, 6, //
@@ -710,6 +811,29 @@ class _PostTabState extends State<PostTab> with WidgetsBindingObserver {
         0, 0, 0, 1, 0, //
       ]),
       child: child,
+    );
+  }
+
+  /// フィルターの現在位置を示す控えめな dots。名前は出さない。
+  Widget _filterDots() {
+    final values = PhotoFilter.values;
+    return Row(
+      mainAxisAlignment: MainAxisAlignment.center,
+      children: [
+        for (final f in values) ...[
+          Container(
+            width: 5,
+            height: 5,
+            margin: const EdgeInsets.symmetric(horizontal: 3),
+            decoration: BoxDecoration(
+              shape: BoxShape.circle,
+              color: f == _filter
+                  ? Colors.white.withValues(alpha: 0.85)
+                  : Colors.white.withValues(alpha: 0.32),
+            ),
+          ),
+        ],
+      ],
     );
   }
 

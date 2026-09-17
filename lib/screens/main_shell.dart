@@ -86,6 +86,11 @@ class _MainShellState extends State<MainShell> with WidgetsBindingObserver {
   /// カメラを閉じないためのガード。
   bool _postBusy = false;
 
+  /// PostTab の35mmフィルタースワイプ中は true。その間だけ PageView の
+  /// 横スワイプ navigation を止め、Camera ← Home → Profile の既存タブ切替
+  /// ジェスチャーと衝突しないようにする。
+  bool _cameraFilterGestureActive = false;
+
   /// Home のヘッダーで見せる未読件数。
   int _unreadCount = 0;
   Timer? _unreadTimer;
@@ -208,6 +213,11 @@ class _MainShellState extends State<MainShell> with WidgetsBindingObserver {
 
   void _onPostBusyChanged(bool busy) {
     _postBusy = busy;
+  }
+
+  void _onCameraFilterGestureActive(bool active) {
+    if (_cameraFilterGestureActive == active) return;
+    setState(() => _cameraFilterGestureActive = active);
   }
 
   @override
@@ -395,6 +405,9 @@ class _MainShellState extends State<MainShell> with WidgetsBindingObserver {
                 children: [
                   PageView(
                     controller: _pager,
+                    physics: _cameraFilterGestureActive
+                        ? const NeverScrollableScrollPhysics()
+                        : const PageScrollPhysics(),
                     onPageChanged: (i) =>
                         setState(() => _tab = ShellTab.values[i]),
                     children: [
@@ -405,6 +418,7 @@ class _MainShellState extends State<MainShell> with WidgetsBindingObserver {
                         onBusyChanged: _onPostBusyChanged,
                         onCaptureLocation: _captureLocationIfEnabled,
                         active: _tab == ShellTab.post,
+                        onFilterGestureActive: _onCameraFilterGestureActive,
                       ),
                       HomeTab(
                         api: widget.api,

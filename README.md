@@ -172,6 +172,12 @@ Docker で Android ビルドを行う場合は [docs/DOCKER.md](docs/DOCKER.md) 
   - 解除と同時に、その2人の間の `view_permissions` を **双方向とも** 削除し、投稿の閲覧権限が残らないようにする
   - `proximity_events`(「会ったことがある」履歴)は削除しない(投稿の閲覧権限には使われないため、他の判定へ影響を与えず履歴として保持する)
   - 成功後は前画面へ戻り、Friends 一覧はバックエンドから再取得して反映する(ローカルだけの解除状態は作らない)
+- 35mm の複数フィルター切替(v15 の filter swipe)
+  - Camera の35mmプレビュー上を横スワイプすると、Neutral / Warm / Cool / Film Contrast の4種類を順番に切り替えられる(8mm には適用しない)
+  - フィルター名は画面へ表示せず、現在位置を示す控えめな dots のみ
+  - プレビューは `ColorFilter.matrix`、保存する JPEG は同じ 4x5 matrix を使った独自のピクセル処理([`applyColorMatrix`](lib/screens/tabs/photo_filter.dart))で焼き込むため、プレビューと投稿画像の見た目が一致する
+  - シャッターを切った瞬間のフィルターをその1枚へ固定し、処理中にスワイプしても撮影結果には混ざらない
+  - Camera 画面の横スワイプは、MainShell の Camera ← Home → Profile のタブ切替スワイプと衝突しないよう、フィルタースワイプ中だけ PageView 側の navigation を一時的に止める設計にしてある
 
 ### 未実装・既知の制約
 
@@ -180,7 +186,6 @@ Docker で Android ビルドを行う場合は [docs/DOCKER.md](docs/DOCKER.md) 
 - アカウント削除の実 API
 - camera プラグインの制約により、物理的な広角・超広角・望遠レンズの正確な列挙・切替は未実装
 - 8mm 動画ファイルそのものの 3:2 クロップ(プレビューのみ 3:2 で、保存ファイルはセンサーのネイティブ比率のまま)
-- 35mm の複数フィルター切替
 - iOS は Mac/Xcode・実機での最終検証待ち(後輩が別ブランチで進めている iOS 対応は、まだこのリポジトリの remote 上では確認できていないため未統合。統合でき次第この節を更新する)
 
 ### 実装済み・実機検証待ち
@@ -193,6 +198,7 @@ BLE・端末の傾き検知・権限まわりは実装済みだが、Android 実
 - 撮影地(B2)の Android 実機での GPS 取得・reverse geocoding
 - 位置情報の権限拒否・GPS/位置情報サービス OFF 時でも投稿・下書きが失敗せず続くこと
 - Home・Own Post Viewer での撮影地表示の実機での見え方
+- 35mm フィルタースワイプと、MainShell のタブ切替スワイプ(Camera ← Home → Profile)が実機のタッチ挙動で本当に衝突しないこと
 
 ## 開発者向けドキュメント
 
