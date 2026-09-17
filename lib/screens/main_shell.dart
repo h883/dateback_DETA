@@ -404,6 +404,7 @@ class _MainShellState extends State<MainShell> with WidgetsBindingObserver {
                         onHome: () => _goTo(ShellTab.home),
                         onBusyChanged: _onPostBusyChanged,
                         onCaptureLocation: _captureLocationIfEnabled,
+                        active: _tab == ShellTab.post,
                       ),
                       HomeTab(
                         api: widget.api,
