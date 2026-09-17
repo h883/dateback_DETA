@@ -1025,6 +1025,11 @@ async function handleMedia(
       .bind(user.uid, key)
       .first<{ id: string }>();
     if (!post) return fail(403, 'not_visible', 'この投稿は閲覧できません');
+  } else {
+    // 未知の種類は「安全と分かっているものだけ通す」方式にするため拒否する。
+    // 将来キーの種類が増えても、ここでチェックを書き忘れたら勝手に
+    // 見えてしまう…という事故を防ぐ。
+    return fail(403, 'not_visible', 'この画像は閲覧できません');
   }
 
   const { value, metadata } = await env.MEDIA.getWithMetadata<{
