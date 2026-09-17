@@ -62,29 +62,40 @@ class BleProximityService implements ProximityService {
   @override
   Future<void> start({required String myBeaconId}) async {
     if (_disposed) return;
-    if (!await FlutterBluePlus.isSupported) {
-      _emitStatus(ProximityStatus.unsupported);
-      return;
-    }
-    if (!await _ensurePermissions()) {
-      _emitStatus(ProximityStatus.permissionDenied);
-      return;
-    }
-    if (_disposed) return;
-
-    _adapterSub ??= FlutterBluePlus.adapterState.listen((state) {
-      if (state == BluetoothAdapterState.off) {
-        _emitStatus(ProximityStatus.bluetoothOff);
+    try {
+      if (!await FlutterBluePlus.isSupported) {
+        _emitStatus(ProximityStatus.unsupported);
+        return;
       }
-    });
+      if (!await _ensurePermissions()) {
+        _emitStatus(ProximityStatus.permissionDenied);
+        return;
+      }
+      if (_disposed) return;
 
-    if (FlutterBluePlus.adapterStateNow == BluetoothAdapterState.off) {
-      _emitStatus(ProximityStatus.bluetoothOff);
-      return;
+      _adapterSub ??= FlutterBluePlus.adapterState.listen(
+        (state) {
+          if (state == BluetoothAdapterState.off) {
+            _emitStatus(ProximityStatus.bluetoothOff);
+          }
+        },
+        onError: (_) {
+          // アダプタ状態の監視自体に失敗しても検知は諦めない。
+        },
+      );
+
+      if (FlutterBluePlus.adapterStateNow == BluetoothAdapterState.off) {
+        _emitStatus(ProximityStatus.bluetoothOff);
+        return;
+      }
+
+      await _advertise(myBeaconId);
+      await _startContinuousScan();
+    } catch (_) {
+      // この端末では BLE の初期化そのものが失敗した(非対応機種・OS制約等)。
+      // アプリ本体を落とさず、近距離検知が使えないことだけ伝える。
+      if (!_disposed) _emitStatus(ProximityStatus.unsupported);
     }
-
-    await _advertise(myBeaconId);
-    await _startContinuousScan();
   }
 
   /// スキャンを止めずに回し続ける。すれ違いが一瞬でも取りこぼしにくくする。
