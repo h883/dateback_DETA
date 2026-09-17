@@ -9,6 +9,7 @@ import '../../widgets/post_media.dart';
 import '../../widgets/remote_image.dart';
 import '../../widgets/wordmark.dart';
 import '../friend_add_sheet.dart';
+import '../other_profile_screen.dart';
 import '../user_log_overlay.dart';
 
 /// ホーム画面（仕様書 10）。
@@ -228,6 +229,21 @@ class _HomeTabState extends State<HomeTab> {
     );
   }
 
+  /// avatar / username 部分だけの導線。投稿本体(タップ/縦スワイプ/長押し)
+  /// のジェスチャーとは別の GestureDetector にしてあるので、そちらを
+  /// 壊さない。
+  void _openProfile(String uid) {
+    Navigator.of(context).push<void>(
+      MaterialPageRoute(
+        builder: (_) => OtherProfileScreen(
+          api: widget.api,
+          uid: uid,
+          onToast: widget.onToast,
+        ),
+      ),
+    );
+  }
+
   @override
   Widget build(BuildContext context) {
     return Column(
@@ -364,42 +380,50 @@ class _HomeTabState extends State<HomeTab> {
       children: [
         Row(
           children: [
-            RemoteAvatar(api: widget.api, path: author.avatarPath),
+            GestureDetector(
+              behavior: HitTestBehavior.opaque,
+              onTap: () => _openProfile(author.uid),
+              child: RemoteAvatar(api: widget.api, path: author.avatarPath),
+            ),
             const SizedBox(width: 10),
             Expanded(
-              child: Column(
-                crossAxisAlignment: CrossAxisAlignment.start,
-                mainAxisSize: MainAxisSize.min,
-                children: [
-                  Text(
-                    author.username,
-                    style: BloomText.bodyLg
-                        .copyWith(fontWeight: FontWeight.w700),
-                    overflow: TextOverflow.ellipsis,
-                  ),
-                  if (post?.locationLabel != null) ...[
-                    const SizedBox(height: 2),
-                    Row(
-                      mainAxisSize: MainAxisSize.min,
-                      children: [
-                        const Icon(
-                          Icons.place_outlined,
-                          size: 11,
-                          color: BloomColors.secondary,
-                        ),
-                        const SizedBox(width: 2),
-                        Flexible(
-                          child: Text(
-                            post!.locationLabel!,
-                            style: BloomText.labelSm
-                                .copyWith(color: BloomColors.secondary),
-                            overflow: TextOverflow.ellipsis,
-                          ),
-                        ),
-                      ],
+              child: GestureDetector(
+                behavior: HitTestBehavior.opaque,
+                onTap: () => _openProfile(author.uid),
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    Text(
+                      author.username,
+                      style: BloomText.bodyLg
+                          .copyWith(fontWeight: FontWeight.w700),
+                      overflow: TextOverflow.ellipsis,
                     ),
+                    if (post?.locationLabel != null) ...[
+                      const SizedBox(height: 2),
+                      Row(
+                        mainAxisSize: MainAxisSize.min,
+                        children: [
+                          const Icon(
+                            Icons.place_outlined,
+                            size: 11,
+                            color: BloomColors.secondary,
+                          ),
+                          const SizedBox(width: 2),
+                          Flexible(
+                            child: Text(
+                              post!.locationLabel!,
+                              style: BloomText.labelSm
+                                  .copyWith(color: BloomColors.secondary),
+                              overflow: TextOverflow.ellipsis,
+                            ),
+                          ),
+                        ],
+                      ),
+                    ],
                   ],
-                ],
+                ),
               ),
             ),
             IconButton(

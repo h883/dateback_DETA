@@ -4,13 +4,13 @@ import '../api/bloom_api.dart';
 import '../models/models.dart';
 import '../theme/bloom_theme.dart';
 import '../widgets/remote_image.dart';
+import 'other_profile_screen.dart';
 
 /// いいねした人一覧のボトムシート(B1)。
 ///
 /// [postId] の一覧は開いたときに初めて取得する(投稿一覧取得時にまとめて
-/// 先読みしない)。他ユーザーのプロフィール専用画面はまだ無いため、行を
-/// タップしても [FriendsScreen] の行タップと同じプレースホルダを出すだけ
-/// にとどめる(正式な遷移は未実装)。
+/// 先読みしない)。行をタップすると、このシートと(下に重なっている)
+/// Own Post Viewer を両方閉じてから [OtherProfileScreen] へ遷移する。
 Future<void> showPostLikersSheet(
   BuildContext context, {
   required BloomApi api,
@@ -62,10 +62,22 @@ class _PostLikersSheetState extends State<_PostLikersSheet> {
     }
   }
 
-  /// 他ユーザーのプロフィール専用画面はまだ無い([FriendsScreen] の
-  /// 行タップと同じ扱い)。
-  void _openProfilePlaceholder() {
-    widget.onToast('プロフィール表示は近日対応します');
+  /// シート自身と、その下の Own Post Viewer(どちらも同じ Navigator の
+  /// スタックに積まれている)を両方閉じてからプロフィールへ遷移する。
+  /// `context` は pop 後に無効になるので、先に NavigatorState を確保する。
+  void _openProfile(String uid) {
+    final navigator = Navigator.of(context);
+    navigator.pop(); // このシートを閉じる
+    navigator.pop(); // Own Post Viewer を閉じる
+    navigator.push(
+      MaterialPageRoute(
+        builder: (_) => OtherProfileScreen(
+          api: widget.api,
+          uid: uid,
+          onToast: widget.onToast,
+        ),
+      ),
+    );
   }
 
   @override
@@ -149,7 +161,7 @@ class _PostLikersSheetState extends State<_PostLikersSheet> {
       itemBuilder: (context, i) => _LikerRow(
         api: widget.api,
         profile: likers[i],
-        onTap: _openProfilePlaceholder,
+        onTap: () => _openProfile(likers[i].uid),
       ),
     );
   }

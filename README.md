@@ -155,11 +155,16 @@ Docker で Android ビルドを行う場合は [docs/DOCKER.md](docs/DOCKER.md) 
   - 投稿失敗時の再試行・下書き(Draft)保存でも、撮影時に取得済みの `locationLabel` をそのまま使い、取り直さない
   - D1 migration `0005_post_location.sql` で `posts.location_label` を追加
   - Android debug build の最終 merged manifest に位置情報の permission(`ACCESS_FINE_LOCATION`/`ACCESS_COARSE_LOCATION`)が含まれることを確認済み
+- 他ユーザーのプロフィール専用画面(`OtherProfileScreen`)
+  - avatar・username・bio(あれば)・閲覧可能な投稿の2列グリッドを表示(自分専用の編集・Settings・ログアウトは出さない)
+  - 遷移元: フレンド一覧の行、いいねした人一覧の行、Home の投稿者 avatar / username(投稿本体のタップ・縦スワイプ操作とは独立)
+  - 投稿グリッドのタップは既存の Own Post Viewer をそのまま再利用(他人の投稿として `isOwn: false`)
+  - 表示する投稿は常にバックエンドがそのとき返す閲覧可能投稿のみ(`fetchUserPosts`。Flutter 側で `visible_until` は判定しない)
 
 ### 未実装・既知の制約
 
 - Apple ログイン(UI のみ、実際の認証は未実装)
-- 他ユーザーのプロフィール専用画面(いいねした人一覧の行をタップしたときの正式な遷移先も、これが無いためまだ実装できていない)
+- 成立済みフレンドの解除(他ユーザープロフィール画面に「フレンド解除」の表示はあるが、対応する backend API がまだ無いため非活性のまま)
 - 利用規約・プライバシーポリシーの実 URL
 - アカウント削除の実 API
 - camera プラグインの制約により、物理的な広角・超広角・望遠レンズの正確な列挙・切替は未実装
