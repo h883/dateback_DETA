@@ -768,7 +768,39 @@ async function handleResolveBeacons(
       ? results.filter((r) => r.is_friend !== 1).map(toProfile)
       : [];
 
+  // 実際に BLE で検知できた相手は「接触した」records として残す。
+  // これがないと、フレンド未満の相手はプロフィール／アイコンが
+  // canViewProfile() に弾かれて見えなくなってしまう
+  // （view_permissions とは別物で、投稿の閲覧権限には影響しない）。
+  await recordProximityContacts(
+    env,
+    user.uid,
+    results.map((r) => r.uid),
+  );
+
   return json({ friends, strangers });
+}
+
+async function recordProximityContacts(
+  env: Env,
+  viewerUid: string,
+  peerUids: string[],
+): Promise<void> {
+  for (const peer of peerUids) {
+    if (!peer || peer === viewerUid) continue;
+    const [a, b] = viewerUid < peer ? [viewerUid, peer] : [peer, viewerUid];
+    const exists = await env.DB.prepare(
+      'SELECT 1 FROM proximity_events WHERE uid_a = ? AND uid_b = ? LIMIT 1',
+    )
+      .bind(a, b)
+      .first();
+    if (exists) continue;
+    await env.DB.prepare(
+      'INSERT INTO proximity_events (id, uid_a, uid_b, occurred_at) VALUES (?, ?, ?, ?)',
+    )
+      .bind(crypto.randomUUID(), a, b, now())
+      .run();
+  }
 }
 
 
