@@ -49,6 +49,11 @@ class _ProfileTabState extends State<ProfileTab> {
   List<Friend> _friends = const [];
   bool _loading = true;
 
+  /// 投稿・フレンドどちらか一方でも取得に失敗したときの表示用。
+  /// 片方だけ更新して片方は古い値を残すと「フレンド0人」等の誤解を招くため、
+  /// 両方まとめて取得できたときだけ両方を更新する([Future.wait])。
+  bool _error = false;
+
   @override
   void initState() {
     super.initState();
@@ -56,18 +61,27 @@ class _ProfileTabState extends State<ProfileTab> {
   }
 
   Future<void> _load() async {
+    setState(() {
+      _loading = true;
+      _error = false;
+    });
     try {
-      final posts = await widget.api.fetchMyPosts();
-      final friends = await widget.api.fetchFriends();
+      final results = await Future.wait<Object>([
+        widget.api.fetchMyPosts(),
+        widget.api.fetchFriends(),
+      ]);
       if (!mounted) return;
       setState(() {
-        _posts = posts;
-        _friends = friends;
+        _posts = results[0] as List<Post>;
+        _friends = results[1] as List<Friend>;
         _loading = false;
       });
-    } catch (e) {
+    } catch (_) {
       if (!mounted) return;
-      setState(() => _loading = false);
+      setState(() {
+        _loading = false;
+        _error = true;
+      });
       widget.onToast('読み込めませんでした');
     }
   }
@@ -168,6 +182,30 @@ class _ProfileTabState extends State<ProfileTab> {
               child: Center(
                 child: CircularProgressIndicator(
                   color: colors.primary,
+                ),
+              ),
+            )
+          else if (_error)
+            Padding(
+              padding: const EdgeInsets.symmetric(vertical: 40),
+              child: Center(
+                child: Column(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    Text(
+                      '読み込めませんでした',
+                      style: BloomText.bodySm
+                          .copyWith(color: colors.onSurfaceVariant),
+                    ),
+                    const SizedBox(height: BloomSpace.sm),
+                    TextButton(
+                      onPressed: _load,
+                      child: Text(
+                        '再試行',
+                        style: BloomText.labelMd.copyWith(color: colors.primary),
+                      ),
+                    ),
+                  ],
                 ),
               ),
             )
