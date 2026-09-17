@@ -202,6 +202,17 @@ class BloomApi {
         .toList();
   }
 
+  /// 成立済みのフレンド関係を解除する。pending 申請の取消/却下には
+  /// [cancelFriendRequest] を使う(こちらとは別の API)。
+  /// フレンドでない相手を指定すると `not_found`(404)。
+  Future<void> removeFriend(String uid) async {
+    final res = await _client.delete(
+      _uri('/api/friends/$uid'),
+      headers: await _authHeaders(),
+    );
+    if (res.statusCode >= 400) _throw(res);
+  }
+
   Future<FriendRequests> fetchFriendRequests() async {
     final res = await _client.get(
       _uri('/api/friends/requests'),

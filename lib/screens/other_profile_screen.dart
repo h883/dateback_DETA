@@ -42,6 +42,9 @@ class _OtherProfileScreenState extends State<OtherProfileScreen> {
   bool _loading = true;
   String? _error;
 
+  /// 解除APIの二重タップ防止。
+  bool _removingFriend = false;
+
   @override
   void initState() {
     super.initState();
@@ -229,15 +232,77 @@ class _OtherProfileScreenState extends State<OtherProfileScreen> {
     );
   }
 
-  /// フレンド解除の実 API がバックエンドに無いため(既存の
-  /// `DELETE /api/friends/requests/:uid` は pending の申請取り消し専用で、
-  /// 成立済みフレンドシップの解除には使えない)、タップできる本物のボタン
-  /// にはせず、Settings Drawer の「アカウントを削除」と同じ方針で
-  /// 非活性表示のみにとどめる(偽の成功を出さない)。
+  /// 確認 → `DELETE /api/friends/:uid` → 成功したら前画面へ戻る。
+  /// 失敗時はこの画面のまま留まり、トーストで伝える(成功扱いにしない)。
+  Future<void> _confirmUnfriend(BloomColorsExt colors) async {
+    if (_removingFriend) return;
+    final profile = _profile;
+    if (profile == null) return;
+
+    final confirmed = await showDialog<bool>(
+      context: context,
+      builder: (dialogContext) => _UnfriendConfirmDialog(username: profile.username),
+    );
+    if (confirmed != true || !mounted) return;
+
+    setState(() => _removingFriend = true);
+    try {
+      await widget.api.removeFriend(widget.uid);
+      if (!mounted) return;
+      Navigator.of(context).pop();
+    } catch (_) {
+      if (!mounted) return;
+      setState(() => _removingFriend = false);
+      widget.onToast('フレンド解除に失敗しました');
+    }
+  }
+
+  /// 控えめな赤系テキスト。タップで確認ダイアログを出す。
   Widget _unfriendLabel(BloomColorsExt colors) {
-    return Text(
-      'フレンド解除(準備中)',
-      style: BloomText.labelSm.copyWith(color: colors.error.withValues(alpha: 0.55)),
+    return GestureDetector(
+      onTap: _removingFriend ? null : () => _confirmUnfriend(colors),
+      behavior: HitTestBehavior.opaque,
+      child: Opacity(
+        opacity: _removingFriend ? 0.5 : 1,
+        child: Text(
+          'フレンド解除',
+          style: BloomText.labelSm.copyWith(color: colors.error),
+        ),
+      ),
+    );
+  }
+}
+
+/// フレンド解除の確認ダイアログ([SettingsDrawer] のログアウト確認と
+/// 同じ見た目の方針。解除は取り消せる操作ではないため確認色を赤系にする)。
+class _UnfriendConfirmDialog extends StatelessWidget {
+  const _UnfriendConfirmDialog({required this.username});
+
+  final String username;
+
+  @override
+  Widget build(BuildContext context) {
+    final colors = context.colors;
+    return AlertDialog(
+      backgroundColor: colors.surfaceContainerLow,
+      title: Text(
+        'フレンドを解除しますか?',
+        style: BloomText.headlineSm.copyWith(color: colors.onSurface),
+      ),
+      content: Text(
+        '$username さんとのフレンド関係を解除します。',
+        style: BloomText.bodySm.copyWith(color: colors.onSurfaceVariant),
+      ),
+      actions: [
+        TextButton(
+          onPressed: () => Navigator.of(context).pop(false),
+          child: Text('キャンセル', style: TextStyle(color: colors.onSurfaceVariant)),
+        ),
+        TextButton(
+          onPressed: () => Navigator.of(context).pop(true),
+          child: Text('解除する', style: TextStyle(color: colors.error)),
+        ),
+      ],
     );
   }
 }
