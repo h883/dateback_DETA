@@ -142,11 +142,14 @@ class _MainShellState extends State<MainShell> with WidgetsBindingObserver {
   }
 
   /// 仕様書 18.1：フォアグラウンドの間だけ動かす。
+  /// resumed 以外（inactive / hidden / paused / detached）はすべて停止対象。
+  /// paused だけを見ていると、他アプリへの切り替え直後に inactive / hidden
+  /// 止まりで止まらないことがあるため。
   @override
   void didChangeAppLifecycleState(AppLifecycleState state) {
     if (state == AppLifecycleState.resumed) {
       _startProximity();
-    } else if (state == AppLifecycleState.paused) {
+    } else {
       unawaited(_proximity.stop());
     }
   }

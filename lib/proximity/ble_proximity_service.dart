@@ -137,7 +137,9 @@ class BleProximityService implements ProximityService {
     }
 
     final peers = found.values.toList();
-    if (peers.isNotEmpty) _peers.add(peers);
+    // 0件でも必ず流す。ここを isNotEmpty で絞ると、相手がいなくなったことが
+    // 購読側に伝わらず、最後に見つかった相手がずっと「いる」ままになる。
+    _peers.add(peers);
     return peers;
   }
 
