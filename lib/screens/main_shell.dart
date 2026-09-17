@@ -405,9 +405,13 @@ class _MainShellState extends State<MainShell> with WidgetsBindingObserver {
                 children: [
                   PageView(
                     controller: _pager,
+                    // フィルタースワイプ中だけ明示的に止める。そうでない
+                    // ときは null にして、各プラットフォームの既定の
+                    // PageView 挙動(元の physics 未指定時の挙動)をそのまま
+                    // 使う。
                     physics: _cameraFilterGestureActive
                         ? const NeverScrollableScrollPhysics()
-                        : const PageScrollPhysics(),
+                        : null,
                     onPageChanged: (i) =>
                         setState(() => _tab = ShellTab.values[i]),
                     children: [
