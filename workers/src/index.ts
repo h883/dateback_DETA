@@ -723,6 +723,46 @@ async function handleFriends(
     });
   }
 
+  // DELETE /api/friends/:uid — 成立済みフレンドシップの解除。
+  // (pending 申請の取消/却下は既存の DELETE /api/friends/requests/:uid のまま。
+  // そちらは status='pending' の行しか消さないので、成立済みには流用しない)
+  if (method === 'DELETE' && rest.length === 1 && rest[0] !== 'requests') {
+    const target = rest[0];
+    if (target === user.uid) {
+      return fail(400, 'bad_request', '自分自身は指定できません');
+    }
+
+    const existing = await env.DB.prepare(
+      `SELECT 1 AS ok FROM friendships
+        WHERE status = 'accepted'
+          AND ((requester = ?1 AND addressee = ?2) OR (requester = ?2 AND addressee = ?1))`,
+    )
+      .bind(user.uid, target)
+      .first<{ ok: number }>();
+    if (!existing) return fail(404, 'not_found', 'フレンドではありません');
+
+    // フレンド関係の解除だけでなく、それを前提に付与されていた投稿の
+    // 閲覧権限（view_permissions、双方向とも）も一緒に消す。解除後も
+    // 相手の投稿が見え続ける状態を残さないため。
+    // 「会ったことがある」記録である proximity_events はここでは消さない
+    // （投稿の閲覧権限は付与しない。プロフィールの基本情報を見せるかどうか
+    //   だけに使う別軸の情報のため、通常の閲覧判定ロジックには影響しない）。
+    await env.DB.batch([
+      env.DB.prepare(
+        `DELETE FROM friendships
+          WHERE status = 'accepted'
+            AND ((requester = ?1 AND addressee = ?2) OR (requester = ?2 AND addressee = ?1))`,
+      ).bind(user.uid, target),
+      env.DB.prepare(
+        `DELETE FROM view_permissions
+          WHERE (viewer_uid = ?1 AND author_uid = ?2)
+             OR (viewer_uid = ?2 AND author_uid = ?1)`,
+      ).bind(user.uid, target),
+    ]);
+
+    return json({ status: 'removed' });
+  }
+
   if (rest[0] !== 'requests') return fail(404, 'not_found', rest.join('/'));
 
   // GET /api/friends/requests — 自分宛ての未承認申請（仕様書 13.3 受信側）。
