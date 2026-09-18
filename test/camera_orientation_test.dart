@@ -113,4 +113,27 @@ void main() {
       expect(size.height, closeTo(100 * 4 / 3, 0.001));
     });
   });
+
+  group('previewQuarterTurnsForTilt', () {
+    test(
+        'landscapeShutterRight は quarterTurns=1 '
+        '(uiQuarterTurnsForTilt とは別目的: frame 自体ではなく、実機で'
+        '確認された「frame は正しいが中の映像内容だけ90°ズレる」問題への'
+        '表示専用の補正。値がたまたま uiQuarterTurnsForTilt と同じ1でも、'
+        'それぞれ独立に導出・変更できることをこの別関数で保証する)', () {
+      expect(previewQuarterTurnsForTilt(DeviceTilt.landscapeShutterRight), 1);
+    });
+
+    test('portrait のときは quarterTurns=0(映像内容を回転しない)', () {
+      expect(previewQuarterTurnsForTilt(DeviceTilt.portrait), 0);
+    });
+
+    test('landscapeOther のときは quarterTurns=0', () {
+      expect(previewQuarterTurnsForTilt(DeviceTilt.landscapeOther), 0);
+    });
+
+    test('null(手動 entry)のときは quarterTurns=0', () {
+      expect(previewQuarterTurnsForTilt(null), 0);
+    });
+  });
 }

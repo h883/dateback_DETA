@@ -360,20 +360,27 @@ class _PostTabState extends State<PostTab> with WidgetsBindingObserver {
   }
 
   /// Camera **UI chrome**(tools・撮影オーバーレイ等、映像そのものは含まない)
-  /// の回転量(+ 分かっていれば preview frame の論理サイズ)。
+  /// の回転量(+ 分かっていれば preview frame の論理サイズ、および
+  /// preview **映像内容**だけにかける追加回転量)。
   /// [_debugLogCameraSession] と同様 [kDebugMode] 限定・呼び出し箇所を
   /// 絞った1回だけのログ(毎frame出力の禁止)。
-  void _debugLogUiOrientation({Size? logicalFrameSize}) {
+  void _debugLogUiOrientation({
+    Size? logicalFrameSize,
+    int? previewQuarterTurns,
+  }) {
     if (!kDebugMode) return;
     final frameInfo = logicalFrameSize == null
         ? ''
         : ' logicalFrame=$logicalFrameSize physicalIntended=3:2';
+    final previewInfo =
+        previewQuarterTurns == null ? '' : ' previewQuarterTurns=$previewQuarterTurns';
     debugPrint(
       '[CameraUIOrientation] '
       'entry=${widget.activeTilt == null ? "manual" : "tilt"} '
       'tilt=${widget.activeTilt} '
       'quarterTurns=${uiQuarterTurnsForTilt(widget.activeTilt)}'
-      '$frameInfo',
+      '$frameInfo'
+      '$previewInfo',
     );
   }
 
@@ -900,31 +907,43 @@ class _PostTabState extends State<PostTab> with WidgetsBindingObserver {
   /// `Column` として組む:
   ///
   /// ```
-  /// [window 論理TOP]    _rightRail 相当(shutter/35mm-8mm/home)を
+  /// [window 論理TOP]    _leftTools 相当(flash/switch/timer/drafts)を
   ///                     RotatedBox で正立させた帯
-  /// [window 論理中央]   preview frame(video は無回転、overlay だけ正立)
-  /// [window 論理BOTTOM] _leftTools 相当(flash/switch/timer/drafts)を
+  /// [window 論理中央]   preview frame(video は追加回転あり、overlay は
+  ///                     UI chrome 用回転で正立)
+  /// [window 論理BOTTOM] _rightRail 相当(shutter/35mm-8mm/home)を
   ///                     RotatedBox で正立させた帯
   /// ```
   ///
-  /// [uiQuarterTurnsForTilt] は「window 論理TOP はユーザーから見て右、
-  /// window 論理BOTTOM はユーザーから見て左」になる回転量として導出して
-  /// あるため([captureOrientationForTilt] と同じ根拠、
-  /// camera_orientation.dart 参照)、この Column の並び(上→下)が
-  /// そのままユーザーから見た並び(右→左)になり、期待レイアウト
-  /// (tools が左、shutter/35mm/8mm が右)を満たす。
+  /// ### 訂正の経緯(実機で左右が逆だった)
   ///
-  /// video layer(preview frame の中身)は無回転のまま独立して描画する
-  /// (=CameraPreview そのものへは一切追加の回転を加えない)。overlay は
-  /// video と全く同じ大きさの box の中で、内容だけ [RotatedBox] で
-  /// 正立させる。
+  /// 以前は _rightRail を論理TOP、_leftTools を論理BOTTOM に置いていたが、
+  /// 実機(Xperia)では tools が右・shutter が左という、期待と逆の配置に
+  /// なった。原因は「window の論理TOP はユーザーから見て右」という
+  /// 当時の想定が誤りだったため。正しくは
+  /// **window の論理TOP はユーザーから見て左、論理BOTTOM は右**
+  /// (`landscapeShutterRight` は端末上部を左へ倒す=物理TOP辺が
+  /// world-left 方向を向く回転であり、これは [TiltWatcher] 自身の
+  /// コメント「端末上部を左へ倒す」と直接対応する)。そのため
+  /// _leftTools を論理TOP、_rightRail を論理BOTTOM に**入れ替えた**。
+  /// 各帯の中身([_leftTools]/[_rightRail] 自体、および両者に渡す
+  /// [quarterTurns] の値)は一切変更していない(=レイアウト配置だけの
+  /// 修正で、個々のアイコンを別々に反転させてはいない)。
+  ///
+  /// video layer(preview frame の中身)には [previewQuarterTurnsForTilt]
+  /// による追加回転を適用する(実機で映像内容だけ90°ズレていたための
+  /// 表示専用の補正。[uiQuarterTurnsForTilt] とは目的が異なる別の値。
+  /// frame 自体の位置・サイズ・比率には影響しない)。overlay は
+  /// video と全く同じ大きさの box の中で、内容だけ [uiQuarterTurnsForTilt]
+  /// で正立させる(=UI chrome 側の回転のまま、変更なし)。
   Widget _tiltCameraStage(CameraController controller, int quarterTurns) {
+    final previewQuarterTurns = previewQuarterTurnsForTilt(widget.activeTilt);
     return Column(
       crossAxisAlignment: CrossAxisAlignment.stretch,
       children: [
         SizedBox(
-          height: _rightRailWidth,
-          child: RotatedBox(quarterTurns: quarterTurns, child: _rightRail()),
+          height: _leftToolsWidth,
+          child: RotatedBox(quarterTurns: quarterTurns, child: _leftTools()),
         ),
         Expanded(
           child: Center(
@@ -939,14 +958,21 @@ class _PostTabState extends State<PostTab> with WidgetsBindingObserver {
                 );
                 if (!_loggedTiltFrameSize) {
                   _loggedTiltFrameSize = true;
-                  _debugLogUiOrientation(logicalFrameSize: size);
+                  _debugLogUiOrientation(
+                    logicalFrameSize: size,
+                    previewQuarterTurns: previewQuarterTurns,
+                  );
                 }
                 return SizedBox(
                   width: size.width,
                   height: size.height,
                   child: Stack(
                     children: [
-                      _previewVideoOnly(controller, boxAspect: 1 / _targetAspect),
+                      _previewVideoOnly(
+                        controller,
+                        boxAspect: 1 / _targetAspect,
+                        previewQuarterTurns: previewQuarterTurns,
+                      ),
                       IgnorePointer(
                         child: RotatedBox(
                           quarterTurns: quarterTurns,
@@ -962,8 +988,8 @@ class _PostTabState extends State<PostTab> with WidgetsBindingObserver {
           ),
         ),
         SizedBox(
-          height: _leftToolsWidth,
-          child: RotatedBox(quarterTurns: quarterTurns, child: _leftTools()),
+          height: _rightRailWidth,
+          child: RotatedBox(quarterTurns: quarterTurns, child: _rightRail()),
         ),
       ],
     );
@@ -1157,8 +1183,14 @@ class _PostTabState extends State<PostTab> with WidgetsBindingObserver {
 
   /// tilt entry 用: 撮影フレームのうち、実際の映像ピクセル
   /// (CameraPreview・静止画プレビュー・crop 中スピナー)だけを描く。
-  /// この layer は tilt-to-camera 中でも**回転しない**
-  /// (要件どおり、preview そのものへの追加回転は行わない)。
+  ///
+  /// **frame 自体**(この widget が置かれる box の位置・サイズ・比率)は
+  /// tilt-to-camera 中でも一切回転・変形しない(要件どおり)。ただし実機
+  /// (Xperia)で、frame 自体は正しいのに中の映像内容だけ90°ズレることが
+  /// 確認されたため、[previewQuarterTurns] が非0 のときだけ**映像内容**に
+  /// 表示専用の追加回転をかける([previewQuarterTurnsForTilt] 参照。
+  /// `CameraController` の capture orientation・`lockCaptureOrientation`
+  /// は一切関与しない、Flutter 側の表示レイヤーだけの補正)。
   ///
   /// [_previewFrame](手動 entry)と違い、外側の [AspectRatio] は持たない
   /// (呼び出し元の [_tiltCameraStage] が [tiltPreviewFrameLogicalSize] で
@@ -1171,7 +1203,11 @@ class _PostTabState extends State<PostTab> with WidgetsBindingObserver {
   /// (tilt entry では論理 2:3、手動 entry の [_previewFrame] 相当では
   /// 3:2)。[_fillPreview] のスケール計算がこの box の形に正しく
   /// フィットさせるために必要。
-  Widget _previewVideoOnly(CameraController controller, {required double boxAspect}) {
+  Widget _previewVideoOnly(
+    CameraController controller, {
+    required double boxAspect,
+    int previewQuarterTurns = 0,
+  }) {
     return ClipRRect(
       borderRadius: BorderRadius.circular(13),
       child: Container(
@@ -1179,7 +1215,11 @@ class _PostTabState extends State<PostTab> with WidgetsBindingObserver {
           color: Colors.black,
           border: Border.all(color: Colors.white24),
         ),
-        child: _previewVideoContent(controller, boxAspect: boxAspect),
+        child: _previewVideoContent(
+          controller,
+          boxAspect: boxAspect,
+          previewQuarterTurns: previewQuarterTurns,
+        ),
       ),
     );
   }
@@ -1191,21 +1231,35 @@ class _PostTabState extends State<PostTab> with WidgetsBindingObserver {
 
   /// [_previewFrame]/[_previewVideoOnly] で共有する、実際の映像ピクセル
   /// 部分(Film8mmEffects 以下)。[boxAspect] は [_fillPreview] 参照。
+  ///
+  /// [previewQuarterTurns] が非0(tilt entry のみ)のときは、live
+  /// CameraPreview・35mm 静止画プレビュー・crop 中スピナーのいずれが
+  /// 表示中でも同じ映像内容として一律に [RotatedBox] で回す(8mm の
+  /// live/recording も同じ経路を通るため自動的に揃う)。`Film8mmEffects`
+  /// (フィルムゲート・グレイン・ジッター)は回転後の内容の**外側**に
+  /// 適用するので、フィルム質感自体の向きは変わらない。
   Widget _previewVideoContent(
     CameraController controller, {
     required double boxAspect,
+    int previewQuarterTurns = 0,
   }) {
     final filmActive = _mode == PostKind.film8mm;
-    return Film8mmEffects(
-      active: filmActive,
-      child: _stillPreview != null
-          ? Image.memory(_stillPreview!, fit: BoxFit.cover)
-          : _cropping
-              ? const Center(
-                  child: CircularProgressIndicator(color: Colors.white70),
-                )
-              : _previewFilter(_fillPreview(controller, boxAspect: boxAspect)),
-    );
+    // RotatedBox は奇数 quarterTurns のとき子へ縦横入れ替えた制約を渡す。
+    // そのぶん _fillPreview 側が cover すべき box の形も入れ替えておかないと、
+    // 回転後に隙間(letterbox)や overflow が出る。
+    final fillAspect =
+        previewQuarterTurns.isOdd ? 1 / boxAspect : boxAspect;
+    Widget content = _stillPreview != null
+        ? Image.memory(_stillPreview!, fit: BoxFit.cover)
+        : _cropping
+            ? const Center(
+                child: CircularProgressIndicator(color: Colors.white70),
+              )
+            : _previewFilter(_fillPreview(controller, boxAspect: fillAspect));
+    if (previewQuarterTurns != 0) {
+      content = RotatedBox(quarterTurns: previewQuarterTurns, child: content);
+    }
+    return Film8mmEffects(active: filmActive, child: content);
   }
 
   /// プレビューを歪めずに [boxAspect] の枠いっぱいに収める。
@@ -1214,8 +1268,9 @@ class _PostTabState extends State<PostTab> with WidgetsBindingObserver {
   /// 差のぶんだけ拡大して切り落とす(BoxFit.cover と同じ考え方)。
   ///
   /// 手動 entry では枠が 3:2([_targetAspect])、tilt entry では
-  /// window 論理座標上の枠が 2:3(=`1 / _targetAspect`)になるため、
-  /// どちらの形にフィットさせるかを [boxAspect] で受け取る
+  /// window 論理座標上の枠が 2:3(=`1 / _targetAspect`。映像内容へ追加の
+  /// [RotatedBox] をかける場合はその内側の子が見る、入れ替え後の形)に
+  /// なるため、どちらの形にフィットさせるかを [boxAspect] で受け取る
   /// (`CameraPreview` 自体は `lockCaptureOrientation` により既に
   /// 正しい向き・比率で自己申告してくるので、ここでの計算式自体は
   /// 変更しない。CameraPreview の回転処理は一切変更していない)。

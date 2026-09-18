@@ -179,3 +179,46 @@ Size tiltPreviewFrameLogicalSize(
   }
   return Size(width, height);
 }
+
+/// [DeviceTilt] から、Camera **preview の映像内容そのもの**(live
+/// CameraPreview・35mm 撮影後の静止画プレビュー・8mm 再生プレビュー)に
+/// 追加でかける表示専用の回転量を返す、副作用の無い純粋関数。
+///
+/// ## [uiQuarterTurnsForTilt] とは別の目的
+///
+/// - [uiQuarterTurnsForTilt] は **UI chrome**(tools・shutter・overlay
+///   等)を正立させるための回転量。3:2 frame 自体や `CameraController` の
+///   capture orientation とは無関係。
+/// - この関数は **frame の中に映る映像ピクセルだけ**を追加で回すための
+///   回転量。frame 自体の位置・サイズ・比率([tiltPreviewFrameLogicalSize]
+///   が計算する 2:3 論理 box)には一切影響しない。
+///
+/// 両者はたまたま現在同じ値(1)になっているが、解いている問題が違うため
+/// 意図的に別関数に分けている。将来どちらか一方だけを直す必要が出ても、
+/// もう一方へ影響しない。
+///
+/// ## 値の根拠
+///
+/// `CameraPreview` 自体は `lockCaptureOrientation(DeviceOrientation.
+/// landscapeLeft)`(`captureOrientationForTilt` 参照、変更禁止)により
+/// 正しい向き・比率を自己申告してくるはずだが、実機(Xperia)で確認した
+/// ところ、3:2 frame 自体(位置・サイズ・比率)は正しいのに、その中の
+/// 映像内容だけが90°ズレて見えることが分かった。実機で「時計回りに90°
+/// 回転させれば正しい向きになる」ことを確認済みのため、
+/// `landscapeShutterRight` では `quarterTurns = 1`(時計回り90°、
+/// [RotatedBox.quarterTurns] の doc comment 参照)を返す。
+///
+/// capture 側([captureOrientationForTilt]/`lockCaptureOrientation`)は
+/// この関数からは一切参照・変更しない。あくまで Flutter 側の表示レイヤー
+/// だけの補正であり、CameraX 側の capture/recording orientation とは
+/// 混同しない。
+///
+/// null(手動 entry)・[DeviceTilt.portrait]・[DeviceTilt.landscapeOther]
+/// では 0(無回転)を返す。
+int previewQuarterTurnsForTilt(DeviceTilt? tilt) {
+  if (tilt == null) return 0;
+  return switch (tilt) {
+    DeviceTilt.landscapeShutterRight => 1,
+    DeviceTilt.landscapeOther || DeviceTilt.portrait => 0,
+  };
+}
