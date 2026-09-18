@@ -1,3 +1,4 @@
+import 'package:flutter/rendering.dart' show BoxConstraints;
 import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:sns_novahack/device/camera_orientation.dart';
@@ -36,12 +37,14 @@ void main() {
 
   group('uiQuarterTurnsForTilt', () {
     test(
-        'landscapeShutterRight は quarterTurns=3 '
-        '(package:camera の camera_preview.dart 内 _getQuarterTurns() の '
-        'landscapeLeft -> 3 という対応表を、同じ portrait 前提レイアウトの '
-        'UI chrome にもそのまま転用したもの。実機で CameraPreview 側の '
-        'landscapeLeft ロックが既に正しく動くことを確認済み)', () {
-      expect(uiQuarterTurnsForTilt(DeviceTilt.landscapeShutterRight), 3);
+        'landscapeShutterRight は quarterTurns=1 '
+        '(実機確認により修正済み: 以前の quarterTurns=3 は Camera preview'
+        'のセンサー画像補正用の対応表を誤って転用したもので、実機で180°'
+        '反転していた。RotatedBox.quarterTurns は "clockwise" ('
+        'package:flutter/src/widgets/basic.dart のdoc comment)であり、'
+        'portraitUp から反時計回り90°という物理回転を打ち消すには同じ'
+        '90°ぶんの時計回り=quarterTurns:1が正しい)', () {
+      expect(uiQuarterTurnsForTilt(DeviceTilt.landscapeShutterRight), 1);
     });
 
     test('portrait のときは quarterTurns=0(UI を回転しない)', () {
@@ -64,5 +67,50 @@ void main() {
     // 「tilt entry(landscapeShutterRight)では回転 wrapper が選ばれ、
     // manual entry(null)/portrait/landscapeOther では選ばれない」ことを
     // 直接検証できている。
+  });
+
+  group('tiltPreviewFrameLogicalSize', () {
+    test('論理 aspect は物理 3:2 の逆比(2:3、縦長)になる', () {
+      // 十分に高さが余っている(width 側で頭打ちになる)ケース。
+      final size = tiltPreviewFrameLogicalSize(
+        const BoxConstraints(maxWidth: 400, maxHeight: 10000),
+      );
+      expect(size.width, 400);
+      expect(size.height, closeTo(600, 0.001)); // 400 * 3/2
+      // width:height = 400:600 = 2:3 (物理的には 600:400 = 3:2 に見える)。
+      expect(size.width / size.height, closeTo(2 / 3, 0.0001));
+    });
+
+    test('短辺(物理2側=論理width)を利用可能な高さいっぱいに合わせる', () {
+      final size = tiltPreviewFrameLogicalSize(
+        const BoxConstraints(maxWidth: 1080, maxHeight: 2238),
+      );
+      // 1080 * 1.5 = 1620 <= 2238 なので width 側で頭打ちになり、
+      // 論理 width がそのまま最大化される(=物理的な短辺が画面高いっぱい)。
+      expect(size.width, 1080);
+      expect(size.height, closeTo(1620, 0.001));
+    });
+
+    test('frame は利用可能な constraints を超えない(高さが足りない場合は縮小)', () {
+      // width=400 のまま height=600 にすると overflow するケース
+      // (利用可能な高さが 500 しかない)。
+      final size = tiltPreviewFrameLogicalSize(
+        const BoxConstraints(maxWidth: 400, maxHeight: 500),
+      );
+      expect(size.width, lessThanOrEqualTo(400));
+      expect(size.height, lessThanOrEqualTo(500));
+      expect(size.height, closeTo(500, 0.001));
+      expect(size.width, closeTo(500 * 2 / 3, 0.001));
+      expect(size.width / size.height, closeTo(2 / 3, 0.0001));
+    });
+
+    test('physicalAspect を指定すればその逆比の論理サイズになる(汎用性の確認)', () {
+      final size = tiltPreviewFrameLogicalSize(
+        const BoxConstraints(maxWidth: 100, maxHeight: 10000),
+        physicalAspect: 4 / 3,
+      );
+      expect(size.width, 100);
+      expect(size.height, closeTo(100 * 4 / 3, 0.001));
+    });
   });
 }

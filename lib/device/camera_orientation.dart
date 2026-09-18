@@ -1,3 +1,4 @@
+import 'package:flutter/rendering.dart' show BoxConstraints, Size;
 import 'package:flutter/services.dart' show DeviceOrientation;
 
 import 'tilt_watcher.dart';
@@ -71,44 +72,110 @@ DeviceOrientation? captureOrientationForTilt(DeviceTilt tilt) {
 /// 含まない)を [RotatedBox] で正立させるための `quarterTurns` を返す、
 /// 副作用の無い純粋関数。
 ///
-/// ## なぜ [captureOrientationForTilt] と同じ値を再利用してよいか
+/// ## 訂正の経緯(実機で 180° 反転していた)
 ///
-/// `package:camera` の `camera_preview.dart`(`CameraPreview._getQuarterTurns`)
-/// は、[DeviceOrientation] から `RotatedBox` の `quarterTurns` への対応を
-/// 次の表で持っている(pub cache 内の camera-0.12.1 のソースで確認済み):
+/// 以前はここで `package:camera` の `camera_preview.dart` 内
+/// `_getQuarterTurns()` の対応表(`landscapeLeft -> 3`)をそのまま転用して
+/// いたが、実機(Xperia)で確認したところ UI chrome 全体が正解から
+/// **180° 反転**していた(quarterTurns 3 と 1 はちょうど 180° 違う)。
+///
+/// この転用は誤りだった。理由: `camera_preview.dart` の対応表が解いている
+/// 問題と、ここで UI chrome について解きたい問題は**似て非なる別の問題**
+/// である。
+///
+/// - `camera_preview.dart` の対応表は「センサーが持つ固定のネイティブ
+///   テクスチャを、**window 自体も現在の [DeviceOrientation] へ回転済み**
+///   という前提のもとで、その回転済み window 内で正しい向きに見せる」
+///   ための回転量(=センサー画像側の補正)。
+/// - このアプリで解きたいのは「**window は portrait 固定のまま一切回転
+///   しない**のに、ユーザーだけが物理的に [DeviceTilt] ぶん端末を回転させて
+///   構えている」ときに、portrait 前提で描いた UI を**その人間から見て
+///   正立させる**という、window 側は動かない別の補正。
+///
+/// 後者を正しく導出するには、camera プラグインの表を借りずに物理的な
+/// 回転から直接考える必要がある。
+///
+/// ## 正しい導出
+///
+/// [TiltWatcher] のコメント、および Flutter 本体の `DeviceOrientation`
+/// enum の doc comment(`package:flutter/src/services/system_chrome.dart`)
+/// はどちらも、`landscapeShutterRight`/`landscapeLeft` を
+/// 「portraitUp から**反時計回り(counterclockwise)90°**」という同じ
+/// 物理的な回転方向で説明している(名前の Left/Right ではなく、この
+/// 回転方向の記述の一致で対応を決めている点は [captureOrientationForTilt]
+/// と同じ)。
+///
+/// 端末が物理的に反時計回り θ だけ回転すると、window に描かれている
+/// (window 自体は回転しない)内容は、端末に固定されたまま一緒に運ばれる
+/// ため、ユーザーから見ると同じ θ だけ反時計回りに傾いて見える。これを
+/// 打ち消して正立させるには、window の描画内容自体を**あらかじめ時計回り
+/// に θ だけ**回しておけばよい(時計回り θ + 反時計回り θ = 差し引き0)。
+///
+/// [RotatedBox.quarterTurns] は Flutter 本体のドキュメントで
+/// 「The number of **clockwise** quarter turns」と明記されている
+/// (`package:flutter/src/widgets/basic.dart` で確認済み)。よって
+/// 「物理的な反時計回り θ」を打ち消す `quarterTurns` は、**同じ回転量を
+/// そのまま時計回りの quarterTurns として使えばよい**:
 ///
 /// ```
-/// portraitUp     -> 0
-/// landscapeRight -> 1
-/// portraitDown   -> 2
-/// landscapeLeft  -> 3
+/// portraitUp     (回転  0°) -> quarterTurns 0
+/// landscapeLeft  (回転 90°反時計回り) -> quarterTurns 1
+/// portraitDown   (回転180°)          -> quarterTurns 2
+/// landscapeRight (回転270°反時計回り=90°時計回り) -> quarterTurns 3
 /// ```
 ///
-/// これは「センサーのネイティブ(portrait 前提)テクスチャを、実際に
-/// 端末を構えている向きへ正しく見せるための回転量」であり、まさに今回
-/// 解決したい問題(「portrait 前提で組まれたコンテンツを、実際の物理的な
-/// 傾きに合わせて正立させる」)と同じ構造の変換である。このアプリの UI
-/// chrome も同じく portrait 前提で組まれたレイアウトなので、同じ対応表を
-/// 転用できる。実際に `DeviceOrientation.landscapeLeft` + `quarterTurns: 3`
-/// の組み合わせは、今回の tilt-to-camera 修正で CameraPreview 側が既に
-/// 実機(Xperia)で正しく動作することを確認済み
-/// (`entry=tilt tilt=DeviceTilt.landscapeShutterRight
-/// lockedCaptureOrientation=DeviceOrientation.landscapeLeft` のログ、かつ
-/// 「Camera preview自体は正しい向きになりました」との実機報告)。
+/// これは `camera_preview.dart` の対応表(0,1,2,3 の並びが
+/// portraitUp,landscapeRight,portraitDown,landscapeLeft)を
+/// landscapeLeft/landscapeRight についてだけ入れ替えた、いわば
+/// **逆回転の表**になる(0°/180° は自分自身が逆回転でもあるため変わらない)。
+/// 上記の物理的な導出と、実機で quarterTurns=1 が正解だったという結果は
+/// 一致する。
 ///
-/// この関数は [captureOrientationForTilt] の結果を経由してこの対応表を
-/// 適用するだけで、tilt → DeviceOrientation の判定ロジック自体
-/// (どちらが landscapeLeft か)は一切変更しない
-/// ([captureOrientationForTilt] のコメント参照)。
+/// この関数は [captureOrientationForTilt] の結果(=どちらが landscapeLeft
+/// かという判定)は一切変更せず、そこから先の「UI chrome 用の回転量」だけを
+/// 独自に(camera プラグインの表を借りずに)導出する。
 ///
 /// null(手動 entry、または tilt-to-camera の対象外の向き)のときは 0
 /// (=無回転、既存の portrait UI のまま)を返す。
 int uiQuarterTurnsForTilt(DeviceTilt? tilt) {
   if (tilt == null) return 0;
   return switch (captureOrientationForTilt(tilt)) {
-    DeviceOrientation.landscapeRight => 1,
+    DeviceOrientation.landscapeLeft => 1,
     DeviceOrientation.portraitDown => 2,
-    DeviceOrientation.landscapeLeft => 3,
+    DeviceOrientation.landscapeRight => 3,
     DeviceOrientation.portraitUp || null => 0,
   };
+}
+
+/// tilt-to-camera 中の Camera preview frame の**論理**(=portrait window
+/// 座標系での、無回転の)サイズを、利用可能な論理領域(chrome 用の領域を
+/// 差し引いた後の [constraints])から計算する、副作用の無い純粋関数。
+///
+/// window 自体は portrait 固定のまま回転しないが、ユーザーは端末を
+/// 物理的に90°傾けて構えているため、window の論理 width は物理的な
+/// (ユーザーから見た)高さに、論理 height は物理的な幅に対応する
+/// (90°傾けると width/height の対応が入れ替わって知覚されるため)。
+///
+/// 撮影 frame はユーザーから見て [physicalAspect](既定 3:2、横長)で
+/// 見える必要があるため、論理座標上では **その逆比(既定 2:3、縦長)** の
+/// box として配置する。物理的な短辺(縦長 box の論理 width 側)を利用可能な
+/// 論理 width いっぱいに合わせ、長辺(論理 height 側)は
+/// `height = width * physicalAspect` で自動的に決める。
+///
+/// [constraints] に収まらない(=どちらかの軸で overflow する)場合は、
+/// 収まる側を基準に縮小し、常に [constraints] 以内(かつ [physicalAspect]
+/// の逆比を保った)最大サイズを返す。
+Size tiltPreviewFrameLogicalSize(
+  BoxConstraints constraints, {
+  double physicalAspect = 3 / 2,
+}) {
+  final maxW = constraints.maxWidth;
+  final maxH = constraints.maxHeight;
+  var width = maxW;
+  var height = width * physicalAspect;
+  if (height > maxH) {
+    height = maxH;
+    width = height / physicalAspect;
+  }
+  return Size(width, height);
 }

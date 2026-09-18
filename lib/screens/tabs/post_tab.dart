@@ -233,9 +233,19 @@ class _PostTabState extends State<PostTab> with WidgetsBindingObserver {
   /// 永続化はしない(Camera を作り直せば Neutral に戻る程度で十分)。
   PhotoFilter _filter = PhotoFilter.neutral;
 
-  /// フィルタースワイプの累積横移動量。
+  /// フィルタースワイプの累積移動量(手動 entry は横方向 dx、tilt entry は
+  /// 縦方向 dy を蓄積する。[_filterSwipeArea]/[_tiltFilterSwipeArea] 参照)。
   double _filterDragAccum = 0;
   static const _filterSwipeThreshold = 45.0;
+
+  /// tilt session 中の preview frame の論理サイズを [kDebugMode] で
+  /// 1回だけログしたかどうか。[widget.activeTilt] が変わるたびリセットする。
+  bool _loggedTiltFrameSize = false;
+
+  /// [_leftTools]/[_rightRail] 自身が使っている固定幅(手動 entry の
+  /// portrait Row でも、tilt entry で正立させた後の帯の厚みとしても使う)。
+  static const _leftToolsWidth = 62.0;
+  static const _rightRailWidth = 100.0;
 
   FlashMode _flashMode = FlashMode.off;
 
@@ -282,8 +292,11 @@ class _PostTabState extends State<PostTab> with WidgetsBindingObserver {
       _syncCaptureOrientationLock();
       // capture orientation の付け外しの成否とは無関係に、UI chrome の
       // 回転量は widget.activeTilt だけで決まる([uiQuarterTurnsForTilt])
-      // ので、こちらは常にログする。
+      // ので、こちらは常にログする。frame サイズは次の build 時に
+      // LayoutBuilder 経由で確定してから改めて1回だけログする
+      // ([_tiltCameraStage] 参照)。
       _debugLogUiOrientation();
+      _loggedTiltFrameSize = false;
     }
   }
 
@@ -347,15 +360,20 @@ class _PostTabState extends State<PostTab> with WidgetsBindingObserver {
   }
 
   /// Camera **UI chrome**(tools・撮影オーバーレイ等、映像そのものは含まない)
-  /// の回転量。[_debugLogCameraSession] と同様 [kDebugMode] 限定・
-  /// 呼び出し箇所を絞った1回だけのログ(毎frame出力の禁止)。
-  void _debugLogUiOrientation() {
+  /// の回転量(+ 分かっていれば preview frame の論理サイズ)。
+  /// [_debugLogCameraSession] と同様 [kDebugMode] 限定・呼び出し箇所を
+  /// 絞った1回だけのログ(毎frame出力の禁止)。
+  void _debugLogUiOrientation({Size? logicalFrameSize}) {
     if (!kDebugMode) return;
+    final frameInfo = logicalFrameSize == null
+        ? ''
+        : ' logicalFrame=$logicalFrameSize physicalIntended=3:2';
     debugPrint(
       '[CameraUIOrientation] '
       'entry=${widget.activeTilt == null ? "manual" : "tilt"} '
       'tilt=${widget.activeTilt} '
-      'quarterTurns=${uiQuarterTurnsForTilt(widget.activeTilt)}',
+      'quarterTurns=${uiQuarterTurnsForTilt(widget.activeTilt)}'
+      '$frameInfo',
     );
   }
 
@@ -877,80 +895,75 @@ class _PostTabState extends State<PostTab> with WidgetsBindingObserver {
 
   /// tilt-to-camera 経由で開いた場合の Camera UI。
   ///
-  /// video layer([_previewVideoOnly])は既存の portrait レイアウトと
-  /// 全く同じ `Row([SizedBox(62), Expanded(Center(AspectRatio(3:2))),
-  /// SizedBox(100)])` の中に、無回転のまま独立して描画する
-  /// (=CameraPreview そのものへは一切追加の回転を加えない)。
+  /// window 自体は portrait 固定のまま回転しないので、ここは
+  /// **window の論理座標(portrait)で「上から順に」中身を並べる**
+  /// `Column` として組む:
   ///
-  /// chrome(tools・撮影オーバーレイ・filter swipe のヒットエリア)は、
-  /// 個々のアイコンをその場で回すのではなく、まとまり単位で
-  /// [RotatedBox] へ包むことで「向きだけ直って位置は portrait のまま」に
-  /// ならないようにする。overlay 用の `Row` は video 用の `Row` と全く
-  /// 同じ外枠構造(SizedBox(62)/Expanded/Center/AspectRatio)を使うことで、
-  /// video の枠と寸分違わず重なる(`RotatedBox` は自分の子にだけ縦横
-  /// 入れ替えた制約を渡すため、この外枠の sizing 計算自体には影響しない)。
+  /// ```
+  /// [window 論理TOP]    _rightRail 相当(shutter/35mm-8mm/home)を
+  ///                     RotatedBox で正立させた帯
+  /// [window 論理中央]   preview frame(video は無回転、overlay だけ正立)
+  /// [window 論理BOTTOM] _leftTools 相当(flash/switch/timer/drafts)を
+  ///                     RotatedBox で正立させた帯
+  /// ```
+  ///
+  /// [uiQuarterTurnsForTilt] は「window 論理TOP はユーザーから見て右、
+  /// window 論理BOTTOM はユーザーから見て左」になる回転量として導出して
+  /// あるため([captureOrientationForTilt] と同じ根拠、
+  /// camera_orientation.dart 参照)、この Column の並び(上→下)が
+  /// そのままユーザーから見た並び(右→左)になり、期待レイアウト
+  /// (tools が左、shutter/35mm/8mm が右)を満たす。
+  ///
+  /// video layer(preview frame の中身)は無回転のまま独立して描画する
+  /// (=CameraPreview そのものへは一切追加の回転を加えない)。overlay は
+  /// video と全く同じ大きさの box の中で、内容だけ [RotatedBox] で
+  /// 正立させる。
   Widget _tiltCameraStage(CameraController controller, int quarterTurns) {
-    return Stack(
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.stretch,
       children: [
-        // video layer(無回転)。
-        Row(
-          children: [
-            const SizedBox(width: 62),
-            Expanded(child: Center(child: _previewVideoOnly(controller))),
-            const SizedBox(width: 100),
-          ],
+        SizedBox(
+          height: _rightRailWidth,
+          child: RotatedBox(quarterTurns: quarterTurns, child: _rightRail()),
         ),
-        // 撮影オーバーレイ(record dot / stamp / countdown / filter dots)。
-        // video と全く同じ枠の中で、中身だけ正立させる。
-        IgnorePointer(
-          child: Row(
-            children: [
-              const SizedBox(width: 62),
-              Expanded(
-                child: Center(
-                  child: AspectRatio(
-                    aspectRatio: _targetAspect,
-                    child: RotatedBox(
-                      quarterTurns: quarterTurns,
-                      child: _previewOverlayOnly(),
-                    ),
+        Expanded(
+          child: Center(
+            child: LayoutBuilder(
+              builder: (context, constraints) {
+                final size = tiltPreviewFrameLogicalSize(
+                  BoxConstraints(
+                    maxWidth: constraints.maxWidth,
+                    maxHeight: constraints.maxHeight,
                   ),
-                ),
-              ),
-              const SizedBox(width: 100),
-            ],
-          ),
-        ),
-        // filter swipe のヒットエリア(video と同じ枠)。
-        Row(
-          children: [
-            const SizedBox(width: 62),
-            Expanded(
-              child: Center(
-                child: AspectRatio(
-                  aspectRatio: _targetAspect,
-                  child: _tiltFilterSwipeArea(),
-                ),
-              ),
-            ),
-            const SizedBox(width: 100),
-          ],
-        ),
-        // tools(flash・camera switch・timer・drafts・home・shutter・
-        // 35mm/8mm セレクター・撮影確認 UI)。leftTools/rightRail を
-        // 1つの Row としてまとめてから丸ごと回すことで、landscape カメラ
-        // として自然な配置(操作全体が正しい向き・位置関係で並ぶ)にする。
-        Positioned.fill(
-          child: RotatedBox(
-            quarterTurns: quarterTurns,
-            child: Row(
-              children: [
-                _leftTools(),
-                const Expanded(child: SizedBox.shrink()),
-                _rightRail(),
-              ],
+                  physicalAspect: _targetAspect,
+                );
+                if (!_loggedTiltFrameSize) {
+                  _loggedTiltFrameSize = true;
+                  _debugLogUiOrientation(logicalFrameSize: size);
+                }
+                return SizedBox(
+                  width: size.width,
+                  height: size.height,
+                  child: Stack(
+                    children: [
+                      _previewVideoOnly(controller, boxAspect: 1 / _targetAspect),
+                      IgnorePointer(
+                        child: RotatedBox(
+                          quarterTurns: quarterTurns,
+                          child: _previewOverlayOnly(),
+                        ),
+                      ),
+                      _tiltFilterSwipeArea(),
+                    ],
+                  ),
+                );
+              },
             ),
           ),
+        ),
+        SizedBox(
+          height: _leftToolsWidth,
+          child: RotatedBox(quarterTurns: quarterTurns, child: _leftTools()),
         ),
       ],
     );
@@ -1052,16 +1065,28 @@ class _PostTabState extends State<PostTab> with WidgetsBindingObserver {
   /// ユーザーが物理的に「横方向」へスワイプする動きは、window の生座標
   /// (portrait 基準、無回転)では**縦方向**の指の動き(dy)として届く。
   ///
-  /// 対応根拠: `landscapeShutterRight`(portraitUp から反時計回り90°)へ
-  /// 端末を傾けた状態で、window のネイティブ +x 軸(dx>0 方向)は重力基準の
+  /// ## 軸(dx→dy)の根拠
+  ///
+  /// `landscapeShutterRight`(portraitUp から反時計回り90°)へ端末を
+  /// 傾けた状態で、window のネイティブ +x 軸(dx>0 方向)は重力基準の
   /// 「上」を、window のネイティブ +y 軸(dy>0 方向)は重力基準の「右」を
   /// 指す(portraitUp から反時計回り90°回転させた単位ベクトルの計算による。
-  /// [captureOrientationForTilt] の回転方向の根拠と同じ回転を使っている)。
+  /// このタッチ座標→重力方向の対応は「window がその場で物理的に運ばれる」
+  /// だけの話で、[uiQuarterTurnsForTilt] の回転方向とは無関係に成立する
+  /// ため、UI chrome の回転量([captureOrientationForTilt] の
+  /// quarterTurns 修正)が変わってもこの軸の対応(dx→dy)自体は変わらない)。
   /// つまり「ユーザーから見て右へスワイプ」は window 座標では dy>0
-  /// (下方向のドラッグ)として届く。手動 entry 用の
-  /// onHorizontalDragUpdate/dx ベースの判定([_filterSwipeArea])と
-  /// 符号の意味(正 = 右)はそのまま保たれるため、軸を dx→dy、
-  /// onHorizontalDrag*→onVerticalDrag* に差し替えるだけでよい。
+  /// (下方向のドラッグ)として届く。
+  ///
+  /// ## 符号の根拠(手動 entry とは意図的に異なる)
+  ///
+  /// 仕様として「ユーザーから見て右へswipe→次のfilter、左へswipe→前の
+  /// filter」を満たす必要があるため、`_filterDragAccum < 0 ? -1 : 1`
+  /// (accum<0 = 左スワイプ = 前のfilter、accum>0 = 右スワイプ = 次の
+  /// filter)とする。これは手動 entry([_filterSwipeArea])の
+  /// `_filterDragAccum < 0 ? 1 : -1` とは比較の向きが逆だが、手動 entry
+  /// 側の dx 規約(左スワイプ→次)は変更しない、という指示に基づき
+  /// 意図的に据え置いている。
   Widget _tiltFilterSwipeArea() {
     if (_mode != PostKind.film35mm || _busy) return const SizedBox.shrink();
 
@@ -1077,7 +1102,7 @@ class _PostTabState extends State<PostTab> with WidgetsBindingObserver {
         },
         onVerticalDragEnd: (_) {
           if (_filterDragAccum.abs() > _filterSwipeThreshold) {
-            _changeFilter(_filterDragAccum < 0 ? 1 : -1);
+            _changeFilter(_filterDragAccum < 0 ? -1 : 1);
           }
         },
         child: const SizedBox.expand(),
@@ -1121,7 +1146,7 @@ class _PostTabState extends State<PostTab> with WidgetsBindingObserver {
           child: Stack(
             fit: StackFit.expand,
             children: [
-              _previewVideoContent(controller),
+              _previewVideoContent(controller, boxAspect: _targetAspect),
               ..._previewOverlayChildren(),
             ],
           ),
@@ -1130,24 +1155,31 @@ class _PostTabState extends State<PostTab> with WidgetsBindingObserver {
     );
   }
 
-  /// tilt entry 用: 3:2 の撮影フレームのうち、実際の映像ピクセル
+  /// tilt entry 用: 撮影フレームのうち、実際の映像ピクセル
   /// (CameraPreview・静止画プレビュー・crop 中スピナー)だけを描く。
   /// この layer は tilt-to-camera 中でも**回転しない**
   /// (要件どおり、preview そのものへの追加回転は行わない)。
-  /// 枠(角丸・黒背景・白い縁取り)は向きに依存しない見た目なので、
-  /// [_previewFrame] と同じくここに含めてよい。
-  Widget _previewVideoOnly(CameraController controller) {
-    return AspectRatio(
-      aspectRatio: _targetAspect,
-      child: ClipRRect(
-        borderRadius: BorderRadius.circular(13),
-        child: Container(
-          decoration: BoxDecoration(
-            color: Colors.black,
-            border: Border.all(color: Colors.white24),
-          ),
-          child: _previewVideoContent(controller),
+  ///
+  /// [_previewFrame](手動 entry)と違い、外側の [AspectRatio] は持たない
+  /// (呼び出し元の [_tiltCameraStage] が [tiltPreviewFrameLogicalSize] で
+  /// 計算した論理サイズの `SizedBox` を既に用意しているため、ここでは
+  /// その `SizedBox` いっぱいに描くだけでよい)。枠(角丸・黒背景・
+  /// 白い縁取り)は向きに依存しない見た目なので、[_previewFrame] と
+  /// 同じくここに含めてよい。
+  ///
+  /// [boxAspect] は「実際にこの widget が描かれる box の width/height 比」
+  /// (tilt entry では論理 2:3、手動 entry の [_previewFrame] 相当では
+  /// 3:2)。[_fillPreview] のスケール計算がこの box の形に正しく
+  /// フィットさせるために必要。
+  Widget _previewVideoOnly(CameraController controller, {required double boxAspect}) {
+    return ClipRRect(
+      borderRadius: BorderRadius.circular(13),
+      child: Container(
+        decoration: BoxDecoration(
+          color: Colors.black,
+          border: Border.all(color: Colors.white24),
         ),
+        child: _previewVideoContent(controller, boxAspect: boxAspect),
       ),
     );
   }
@@ -1158,8 +1190,11 @@ class _PostTabState extends State<PostTab> with WidgetsBindingObserver {
   Widget _previewOverlayOnly() => Stack(children: _previewOverlayChildren());
 
   /// [_previewFrame]/[_previewVideoOnly] で共有する、実際の映像ピクセル
-  /// 部分(Film8mmEffects 以下)。
-  Widget _previewVideoContent(CameraController controller) {
+  /// 部分(Film8mmEffects 以下)。[boxAspect] は [_fillPreview] 参照。
+  Widget _previewVideoContent(
+    CameraController controller, {
+    required double boxAspect,
+  }) {
     final filmActive = _mode == PostKind.film8mm;
     return Film8mmEffects(
       active: filmActive,
@@ -1169,16 +1204,23 @@ class _PostTabState extends State<PostTab> with WidgetsBindingObserver {
               ? const Center(
                   child: CircularProgressIndicator(color: Colors.white70),
                 )
-              : _previewFilter(_fillPreview(controller)),
+              : _previewFilter(_fillPreview(controller, boxAspect: boxAspect)),
     );
   }
 
-  /// プレビューを歪めずに 3:2 の枠いっぱいに収める。
+  /// プレビューを歪めずに [boxAspect] の枠いっぱいに収める。
   ///
-  /// CameraPreview はセンサーの縦横比で描くので、3:2 の枠とは比率が合わない。
+  /// CameraPreview はセンサーの縦横比で描くので、枠とは比率が合わない。
   /// 差のぶんだけ拡大して切り落とす(BoxFit.cover と同じ考え方)。
-  Widget _fillPreview(CameraController controller) {
-    var scale = _targetAspect / controller.value.aspectRatio;
+  ///
+  /// 手動 entry では枠が 3:2([_targetAspect])、tilt entry では
+  /// window 論理座標上の枠が 2:3(=`1 / _targetAspect`)になるため、
+  /// どちらの形にフィットさせるかを [boxAspect] で受け取る
+  /// (`CameraPreview` 自体は `lockCaptureOrientation` により既に
+  /// 正しい向き・比率で自己申告してくるので、ここでの計算式自体は
+  /// 変更しない。CameraPreview の回転処理は一切変更していない)。
+  Widget _fillPreview(CameraController controller, {required double boxAspect}) {
+    var scale = boxAspect / controller.value.aspectRatio;
     if (scale < 1) scale = 1 / scale;
 
     return ClipRect(
@@ -1275,7 +1317,7 @@ class _PostTabState extends State<PostTab> with WidgetsBindingObserver {
   Widget _leftTools() {
     final controller = _controller;
     if (controller == null || _busy) {
-      return const SizedBox(width: 62);
+      return const SizedBox(width: _leftToolsWidth);
     }
     final canFlash = controller.description.lensDirection ==
         CameraLensDirection.back;
@@ -1283,7 +1325,7 @@ class _PostTabState extends State<PostTab> with WidgetsBindingObserver {
         _cameras.map((c) => c.lensDirection).toSet().length > 1;
 
     return SizedBox(
-      width: 62,
+      width: _leftToolsWidth,
       child: Column(
         mainAxisAlignment: MainAxisAlignment.center,
         children: [
@@ -1376,7 +1418,7 @@ class _PostTabState extends State<PostTab> with WidgetsBindingObserver {
   Widget _rightRail() {
     final reviewing = _captured != null;
     return SizedBox(
-      width: 100,
+      width: _rightRailWidth,
       child: Column(
         children: [
           const SizedBox(height: 4),
