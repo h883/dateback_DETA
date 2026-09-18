@@ -4,6 +4,17 @@
     <!-- Android 13(API 33)以降、通知を表示するには実行時許可が要る。
          初回セットアップ画面の「通知」項目で要求するために宣言する。 -->
     <uses-permission android:name="android.permission.POST_NOTIFICATIONS"/>
+    <!-- 近くの友達を探す機能(位置情報)のために、API レベルを問わず明示的に宣言する。
+         flutter_blue_plus/flutter_ble_peripheral は BLUETOOTH_SCAN に
+         neverForLocation を付けているため、両パッケージ自身が merge する
+         ACCESS_FINE/COARSE_LOCATION は maxSdkVersion="30" 止まり(Android 12+
+         では BLE 用途に位置情報が不要なため)。これだけに頼ると Android 12+
+         端末では位置情報がアプリの実効パーミッションとして一切宣言されず、
+         Permission.locationWhenInUse.request() を呼んでも OS ダイアログが
+         出ない(=宣言されていない権限は request しても即座に拒否扱いになる)。
+         アプリ自身は BLE と無関係に位置情報を使うため、上限なしで宣言する。 -->
+    <uses-permission android:name="android.permission.ACCESS_COARSE_LOCATION"/>
+    <uses-permission android:name="android.permission.ACCESS_FINE_LOCATION"/>
     <application
         android:label="dateback"
         android:name="${applicationName}"
