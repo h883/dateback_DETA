@@ -375,6 +375,12 @@ class _MainShellState extends State<MainShell> with WidgetsBindingObserver {
 
   /// ナビを手で押したとき。
   void _selectTab(ShellTab tab) {
+    if (tab == ShellTab.post) {
+      // ボトムナビの Camera ボタンで開いた場合も、横に倒して自動起動した
+      // ときと同じ orientation lock / UI 回転を適用する
+      // ([_onTiltChanged] の landscapeShutterRight 分岐と同じ値を渡す)。
+      setState(() => _activeCameraTilt = DeviceTilt.landscapeShutterRight);
+    }
     _goTo(tab);
   }
 
