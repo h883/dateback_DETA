@@ -127,4 +127,14 @@ abstract final class AppPermissions {
         granted: status.isGranted,
         permanentlyDenied: status.isPermanentlyDenied,
       );
+
+  /// Denied 済み permission の「設定を開く」導線用。OS の設定アプリを開く
+  /// だけで、permission dialog を自動で再 request することはしない。
+  static Future<void> openSettings() async {
+    try {
+      await openAppSettings();
+    } catch (_) {
+      // 設定アプリを開けない端末では何もしない。
+    }
+  }
 }

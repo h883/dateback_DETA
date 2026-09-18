@@ -1,44 +1,127 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
+import 'package:sns_novahack/device/app_permissions.dart';
 import 'package:sns_novahack/screens/consent_permission_screen.dart';
 import 'package:sns_novahack/theme/bloom_theme.dart';
 
-Widget _app(VoidCallback onNext) => MaterialApp(
+Future<PermissionReadout> _neverGranted(AppPermissionKind _) async =>
+    (granted: false, permanentlyDenied: false);
+
+Widget _app({
+  required VoidCallback onNext,
+  required Future<PermissionReadout> Function(AppPermissionKind) read,
+  Future<PermissionReadout> Function(AppPermissionKind)? request,
+}) =>
+    MaterialApp(
       theme: buildBloomTheme(),
-      home: ConsentPermissionScreen(onNext: onNext),
+      home: ConsentPermissionScreen(
+        onNext: onNext,
+        debugRead: read,
+        debugRequest: request ?? _neverGranted,
+      ),
     );
 
 void main() {
-  testWidgets('4つの permission 行を表示し、個別の「許可」ボタンは無い', (tester) async {
-    await tester.pumpWidget(_app(() {}));
-    await tester.pump();
+  testWidgets('最初は Camera だけが current step として表示される', (tester) async {
+    await tester.pumpWidget(_app(onNext: () {}, read: _neverGranted));
+    await tester.pumpAndSettle();
 
     expect(find.text('カメラ'), findsOneWidget);
+    expect(find.text('カメラを許可する'), findsOneWidget);
+
+    // 未来の step はまだ画面に出ない。
+    expect(find.text('Bluetooth'), findsNothing);
+    expect(find.text('位置情報'), findsNothing);
+    expect(find.text('通知'), findsNothing);
+
+    // まとめて連続 request する旧 UI は残っていない。
+    expect(find.text('権限をまとめて許可する'), findsNothing);
+  });
+
+  testWidgets('Camera を許可(granted)すると Bluetooth step へ進む', (tester) async {
+    final granted = <AppPermissionKind>{};
+    await tester.pumpWidget(_app(
+      onNext: () {},
+      read: (kind) async =>
+          (granted: granted.contains(kind), permanentlyDenied: false),
+      request: (kind) async {
+        granted.add(kind);
+        return (granted: true, permanentlyDenied: false);
+      },
+    ));
+    await tester.pumpAndSettle();
+
+    await tester.tap(find.text('カメラを許可する'));
+    await tester.pumpAndSettle();
+
+    // Camera は完了済みとして上に残り、green lamp(許可済み)になる。
+    expect(find.text('カメラ'), findsOneWidget);
+    expect(find.text('許可済み'), findsOneWidget);
+
+    // 次は Bluetooth が current。Location/Notification はまだ出ない。
+    expect(find.text('Bluetoothを許可する'), findsOneWidget);
+    expect(find.text('位置情報'), findsNothing);
+    expect(find.text('通知'), findsNothing);
+  });
+
+  testWidgets('Camera を拒否(denied)しても Bluetooth step へ進む', (tester) async {
+    await tester.pumpWidget(_app(
+      onNext: () {},
+      read: _neverGranted,
+      request: _neverGranted,
+    ));
+    await tester.pumpAndSettle();
+
+    await tester.tap(find.text('カメラを許可する'));
+    await tester.pumpAndSettle();
+
+    // flow は止まらず、Camera は warning lamp(許可されず)で完了扱いになる。
+    expect(find.text('許可されず'), findsOneWidget);
+    expect(find.text('Bluetoothを許可する'), findsOneWidget);
+  });
+
+  testWidgets('既に Camera/Bluetooth が Granted なら最初の未許可 step(Location)へ飛ぶ',
+      (tester) async {
+    const alreadyGranted = {
+      AppPermissionKind.camera,
+      AppPermissionKind.bluetooth,
+    };
+    await tester.pumpWidget(_app(
+      onNext: () {},
+      read: (kind) async =>
+          (granted: alreadyGranted.contains(kind), permanentlyDenied: false),
+    ));
+    await tester.pumpAndSettle();
+
+    expect(find.text('位置情報を許可する'), findsOneWidget);
+    // Camera/Bluetooth は完了済みとして上に表示されている。
+    expect(find.text('カメラ'), findsOneWidget);
     expect(find.text('Bluetooth'), findsOneWidget);
-    expect(find.text('位置情報'), findsOneWidget);
-    expect(find.text('通知'), findsOneWidget);
-
-    // 各行に個別の「許可」ボタンを並べるUIは削除されている。
-    expect(find.text('許可'), findsNothing);
-
-    // まとめて許可する主要アクションは1つだけ。
-    expect(find.text('権限をまとめて許可する'), findsOneWidget);
+    // Notification はまだ未来の step なので出ない。
+    expect(find.text('通知'), findsNothing);
   });
 
-  testWidgets('permission が未取得(プラグイン未接続)でも lamp は gray として描画される', (tester) async {
-    await tester.pumpWidget(_app(() {}));
-    await tester.pump();
+  testWidgets('全 permission が既に Granted なら「次へ」だけになる', (tester) async {
+    await tester.pumpWidget(_app(
+      onNext: () {},
+      read: (_) async => (granted: true, permanentlyDenied: false),
+    ));
+    await tester.pumpAndSettle();
 
-    // テスト環境には OS permission プラグインの実装が無いため、
-    // AppPermissions.read は例外を握りつぶして「未許可」を返す。
-    // その結果、初期状態のラベルは「未許可」(gray)になるはず。
-    expect(find.text('未許可'), findsNWidgets(4));
+    expect(find.text('次へ'), findsOneWidget);
+    expect(find.text('カメラを許可する'), findsNothing);
+    expect(find.text('Bluetoothを許可する'), findsNothing);
+    expect(find.text('位置情報を許可する'), findsNothing);
+    expect(find.text('通知を許可する'), findsNothing);
   });
 
-  testWidgets('optional permission を1つも許可していなくても「次へ」で進める', (tester) async {
+  testWidgets('「次へ」で onNext が呼ばれる', (tester) async {
     var nextCalled = false;
-    await tester.pumpWidget(_app(() => nextCalled = true));
-    await tester.pump();
+    await tester.pumpWidget(_app(
+      onNext: () => nextCalled = true,
+      read: (_) async => (granted: true, permanentlyDenied: false),
+    ));
+    await tester.pumpAndSettle();
 
     await tester.tap(find.text('次へ'));
     await tester.pump();
