@@ -213,4 +213,5 @@ BLE・端末の傾き検知・権限まわりは実装済みだが、Android 実
 | [仕様書.md](仕様書.md) | 何を作っているか、閲覧権限などの詳しい仕様、実装状況 |
 | [docs/SETUP.md](docs/SETUP.md) | 別の端末で動かすための手順、Firebase の SHA-1 登録、既知の落とし穴 |
 | [docs/DOCKER.md](docs/DOCKER.md) | Docker で Android ビルドを行う手順 |
+| [docs/REAL_DEVICE_TEST.md](docs/REAL_DEVICE_TEST.md) | 複数人で Android / iPhone の実機テストを進めるためのチェックシート |
 | [workers/README.md](workers/README.md) | バックエンド(Cloudflare Workers)のエンドポイント一覧と閲覧制御の仕組み |
