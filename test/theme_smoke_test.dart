@@ -23,7 +23,6 @@ void main() {
             api: api,
             profile: buildProfile(uid: 'me', username: '自分'),
             onProfileChanged: (_) {},
-            onSignOut: () {},
             onToast: (_) {},
             proximity: FakeProximityService(),
             onOpenSettings: () {},
