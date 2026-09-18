@@ -82,6 +82,19 @@ class _MainShellState extends State<MainShell> with WidgetsBindingObserver {
   final _tilt = TiltWatcher();
   StreamSubscription<DeviceTilt>? _tiltSub;
 
+  /// tilt-to-camera によって Camera が自動的に開かれた場合の、その時点の
+  /// [DeviceTilt]。手動(右フリック・ボトムナビ)で Camera を開いた場合は
+  /// 常に null のまま。[PostTab] はこれが非null のときだけ
+  /// `CameraController.lockCaptureOrientation` を適用する
+  /// ([captureOrientationForTilt] 参照)。
+  ///
+  /// Camera タブを離れたら(傾き復帰・Home ボタン・スワイプのいずれでも)
+  /// 必ず null に戻す([_onTiltChanged] の縦復帰分岐、PageView の
+  /// `onPageChanged` を参照)。PostTab は PageView 内に残り続けるため、
+  /// ここで確実にリセットしないと次に手動で Camera を開いたときに
+  /// 古い lock 設定が紛れ込む。
+  DeviceTilt? _activeCameraTilt;
+
   /// PostTab が撮影確認中・投稿処理中のとき true。縦に戻しても
   /// カメラを閉じないためのガード。
   bool _postBusy = false;
@@ -195,6 +208,10 @@ class _MainShellState extends State<MainShell> with WidgetsBindingObserver {
     if (tilt == DeviceTilt.landscapeShutterRight) {
       if (!widget.settingsStore.tiltToCameraEnabled) return;
       if (_tab != ShellTab.home) return;
+      // この自動遷移のときだけ、実際に検知した傾きを PostTab へ伝える
+      // (=手動で開いた場合と区別する。orientation lock の可否はこれを見て
+      // PostTab 側が決める)。
+      setState(() => _activeCameraTilt = tilt);
       _goTo(ShellTab.post);
       return;
     }
@@ -412,8 +429,16 @@ class _MainShellState extends State<MainShell> with WidgetsBindingObserver {
                     physics: _cameraFilterGestureActive
                         ? const NeverScrollableScrollPhysics()
                         : null,
-                    onPageChanged: (i) =>
-                        setState(() => _tab = ShellTab.values[i]),
+                    onPageChanged: (i) {
+                      final next = ShellTab.values[i];
+                      setState(() {
+                        _tab = next;
+                        // Camera 以外へ着地したら、開き方が傾き・右フリック・
+                        // ボトムナビのいずれであっても tilt context を必ず
+                        // 消す(PostTab は破棄されずに残り続けるため)。
+                        if (next != ShellTab.post) _activeCameraTilt = null;
+                      });
+                    },
                     children: [
                       PostTab(
                         api: widget.api,
@@ -423,6 +448,7 @@ class _MainShellState extends State<MainShell> with WidgetsBindingObserver {
                         onCaptureLocation: _captureLocationIfEnabled,
                         active: _tab == ShellTab.post,
                         onFilterGestureActive: _onCameraFilterGestureActive,
+                        activeTilt: _activeCameraTilt,
                       ),
                       HomeTab(
                         api: widget.api,
