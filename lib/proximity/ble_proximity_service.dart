@@ -37,9 +37,10 @@ class BleProximityService implements ProximityService {
   bool _continuousScanActive = false;
 
   /// この時間見つからなかった相手は「もういない」として一覧から外す。
-  /// BLEは一瞬の巡り合わせで検知が途切れることがあるため、すぐに
-  /// 消えた扱いにせず、再検知されるのを少し待つ猶予を持たせる。
-  static const _peerTtl = Duration(seconds: 30);
+  /// 【実験】毎秒フレッシュネスバイトを変えて広告し直しているので、
+  /// 実際に近くにいれば毎秒検知され続けるはず。検知が本当に途切れたら
+  /// 数秒で「もういない」と判定してよい。
+  static const _peerTtl = Duration(seconds: 3);
 
   /// dispose() 後は、待機していた非同期処理が復帰しても何もしない。
   /// 待たずに閉じた StreamController に書き込むとクラッシュするため。
@@ -191,6 +192,11 @@ class BleProximityService implements ProximityService {
     await _advertise(myBeaconId);
   }
 
+  /// 【実験】BLEチップの重複除去フィルターを高頻度で回避できるか試すための
+  /// 1バイトカウンター。identity(beaconId本体)には影響しない。
+  int _freshnessCounter = 0;
+  Timer? _freshnessTimer;
+
   /// beaconId を製造者データに載せて広告する。
   Future<void> _advertise(String myBeaconId) async {
     if (_advertising) return;
@@ -200,13 +206,14 @@ class BleProximityService implements ProximityService {
         advertiseData: AdvertiseDataCore(
           serviceUuid: serviceUuid.str,
           manufacturerId: _manufacturerId,
-          manufacturerData: _hexToBytes(myBeaconId),
+          manufacturerData: _withFreshnessByte(_hexToBytes(myBeaconId)),
         ),
         androidSettings: const AndroidAdvertiseSettings(
           advertiseSettings: AdvertiseSettings(
             // 相手に早く見つけてもらう。すれ違いは一瞬なので遅延を優先する。
             advertiseMode: AdvertiseMode.advertiseModeLowLatency,
-            txPowerLevel: AdvertiseTxPower.advertiseTxPowerHigh,
+            // 【実験】出力を下げて到達距離を絞る（1m程度の近距離想定）。
+            txPowerLevel: AdvertiseTxPower.advertiseTxPowerUltraLow,
             // 接続はさせない。beaconId を広告で配るだけ。
             connectable: false,
           ),
@@ -217,6 +224,22 @@ class BleProximityService implements ProximityService {
       // 広告に失敗しても、相手が広告できていればこちらのスキャンで拾える。
       _advertising = false;
     }
+
+    // 【実験】1秒ごとに末尾1バイトだけ変えて広告を作り直す。
+    _freshnessTimer?.cancel();
+    _freshnessTimer = Timer.periodic(const Duration(seconds: 1), (_) async {
+      if (_disposed || _currentBeaconId == null) return;
+      _freshnessCounter = (_freshnessCounter + 1) & 0xff;
+      _advertising = false;
+      try {
+        await _peripheral.stop();
+      } catch (_) {}
+      await _advertise(_currentBeaconId!);
+    });
+  }
+
+  Uint8List _withFreshnessByte(Uint8List id) {
+    return Uint8List.fromList([...id, _freshnessCounter]);
   }
 
   /// 手動検索（フレンド追加画面）用。常時スキャンが既に回っているので、
@@ -241,8 +264,12 @@ class BleProximityService implements ProximityService {
   /// 広告から beaconId を取り出す。本SNS の広告でなければ null。
   String? _beaconIdOf(ScanResult result) {
     final data = result.advertisementData.manufacturerData[_manufacturerId];
-    if (data == null || data.length != 4) return null;
-    return data.map((b) => b.toRadixString(16).padLeft(2, '0')).join();
+    // 【実験】末尾1バイトはフレッシュネス用なので identity には含めない。
+    if (data == null || data.length != 5) return null;
+    return data
+        .take(4)
+        .map((b) => b.toRadixString(16).padLeft(2, '0'))
+        .join();
   }
 
   Future<bool> _ensurePermissions() async {
@@ -265,6 +292,8 @@ class BleProximityService implements ProximityService {
     _liveEmitTimer = null;
     _scanRefreshTimer?.cancel();
     _scanRefreshTimer = null;
+    _freshnessTimer?.cancel();
+    _freshnessTimer = null;
     _liveFound.clear();
     _continuousScanActive = false;
     await _scanSub?.cancel();
@@ -291,6 +320,7 @@ class BleProximityService implements ProximityService {
     _disposed = true;
     _liveEmitTimer?.cancel();
     _scanRefreshTimer?.cancel();
+    _freshnessTimer?.cancel();
     _scanSub?.cancel();
     _adapterSub?.cancel();
     _status.close();
