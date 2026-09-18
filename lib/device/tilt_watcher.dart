@@ -48,18 +48,26 @@ class TiltWatcher {
   DeviceTilt? _pending;
   DateTime? _pendingSince;
 
-  /// start() 後、最初の有効なサンプルは向きの較正にだけ使い、変化としては
-  /// 流さない。これが無いと、起動時点ですでに横向きだった場合に
-  /// 「縦→横になった」という誤ったイベントが飛んでしまう。
-  bool _calibrated = false;
-
   DeviceTilt get current => _current;
 
   /// 向きが変わったときだけ流れる。
   Stream<DeviceTilt> get changes => _controller.stream;
 
+  /// [_current] の初期値は [DeviceTilt.portrait] だが、start() 時点で
+  /// 実際に縦向きとは限らない。以前はここに「最初のサンプルは較正だけに
+  /// 使い、`changes` へは流さない」という特別扱いがあったが、それだと
+  /// 起動・再開の瞬間にすでに横向きだった場合、
+  /// [MainShell._onTiltChanged] のような「`changes` イベントでしか
+  /// 状態を持たない」呼び出し側が起動時点の向きを一切知らされないまま
+  /// になってしまっていた(tilt-to-camera の UI 回転補正が効かない
+  /// 不具合の原因)。
+  ///
+  /// 今は最初のサンプルも他と区別せず、通常の判定(`observed == _current`
+  /// の比較・pending・holdFor)にそのまま流す。起動時に本当に縦向きなら
+  /// `observed == _current` となり何も起きない(意図通り)。起動時に
+  /// すでに横向きなら、holdFor 分待ったうえで正しく `changes` イベントが
+  /// 飛ぶ。
   void start() {
-    _calibrated = false;
     _sub ??= accelerometerEventStream().listen(_onEvent, onError: (_) {
       // センサーが無い端末では何も流さない。縦固定のまま使える。
     });
@@ -106,14 +114,6 @@ class TiltWatcher {
         '[TiltWatcher] x=${x.toStringAsFixed(2)} y=${y.toStringAsFixed(2)} '
         'isLandscape=$isLandscape observed=$observed current=$_current',
       );
-    }
-
-    if (!_calibrated) {
-      _calibrated = true;
-      _current = observed;
-      _pending = null;
-      _pendingSince = null;
-      return;
     }
 
     if (observed == _current) {
