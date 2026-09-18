@@ -3,8 +3,8 @@ import 'dart:typed_data';
 
 import 'package:flutter_ble_peripheral/flutter_ble_peripheral.dart';
 import 'package:flutter_blue_plus/flutter_blue_plus.dart';
-import 'package:permission_handler/permission_handler.dart';
 
+import '../device/app_permissions.dart';
 import 'proximity_service.dart';
 
 /// BLE による近距離検知。
@@ -68,7 +68,7 @@ class BleProximityService implements ProximityService {
         _emitStatus(ProximityStatus.unsupported);
         return;
       }
-      if (!await _ensurePermissions()) {
+      if (!await _hasPermissions()) {
         _emitStatus(ProximityStatus.permissionDenied);
         return;
       }
@@ -110,7 +110,7 @@ class BleProximityService implements ProximityService {
       _emitStatus(ProximityStatus.bluetoothOff);
       return;
     }
-    if (!await _ensurePermissions()) {
+    if (!await _hasPermissions()) {
       _emitStatus(ProximityStatus.permissionDenied);
       return;
     }
@@ -272,19 +272,12 @@ class BleProximityService implements ProximityService {
         .join();
   }
 
-  Future<bool> _ensurePermissions() async {
-    // Android 12 以降はスキャン/広告が個別の権限。12 未満は位置情報が要る。
-    final statuses = await [
-      Permission.bluetoothScan,
-      Permission.bluetoothAdvertise,
-      Permission.bluetoothConnect,
-      Permission.locationWhenInUse,
-    ].request();
-
-    // 位置情報は Android 12 未満でのみ必須なので、BLE 側が通れば良しとする。
-    return statuses[Permission.bluetoothScan]?.isGranted != false &&
-        statuses[Permission.bluetoothAdvertise]?.isGranted != false;
-  }
+  /// 現況を読むだけで、絶対に OS permission dialog は出さない
+  /// (要求は初回 Consent/Permission 画面だけが行う)。
+  /// Home 到達後や resumed のたびにここを通っても、ユーザーには何も
+  /// ポップアップしない。
+  Future<bool> _hasPermissions() =>
+      AppPermissions.isGranted(AppPermissionKind.bluetooth);
 
   @override
   Future<void> stop() async {

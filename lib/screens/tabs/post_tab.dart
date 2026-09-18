@@ -6,8 +6,10 @@ import 'package:camera/camera.dart';
 import 'package:flutter/foundation.dart' show compute;
 import 'package:flutter/material.dart';
 import 'package:image/image.dart' as img;
+import 'package:permission_handler/permission_handler.dart' show openAppSettings;
 
 import '../../api/bloom_api.dart';
+import '../../device/app_permissions.dart';
 import '../../drafts/draft_store.dart';
 import '../../models/models.dart';
 import '../../theme/bloom_theme.dart';
@@ -105,6 +107,12 @@ Uint8List _cropAndFilterTo3x2(_CropAndFilterParams params) {
 /// 35mm は静止画、8mm は2秒の動画。
 /// アプリは縦画面固定なので、この画面も縦で表示する。
 /// 端末を横に倒すとここへ来る導線は MainShell が持っている。
+///
+/// Camera permission は Consent/Permission 画面でのみ要求する。この画面は
+/// 現況を読む([AppPermissions])だけで、Granted かつ [PostTab.active] に
+/// なって初めて [CameraController] を作る(lazy-init)。Denied のときは
+/// [CameraController.initialize] を一切呼ばない(camera プラグイン自身が
+/// 内部で OS permission dialog を出すのを防ぐため)。
 class PostTab extends StatefulWidget {
   const PostTab({
     super.key,
@@ -161,6 +169,12 @@ class _PostTabState extends State<PostTab> with WidgetsBindingObserver {
   CameraController? _controller;
   String? _cameraError;
 
+  /// null = まだ確認していない。実際の OS permission status が
+  /// source of truth(Consent 画面で許可した想定でも、ここで必ず読み直す)。
+  /// Granted でない限り [CameraController.initialize] は絶対に呼ばない
+  /// (=camera プラグインが内部で OS permission dialog を出すのを防ぐ)。
+  bool? _cameraPermissionGranted;
+
   /// 初期化中の多重起動を防ぐ。回転のたびに resumed が来るため。
   bool _settingUp = false;
 
@@ -215,7 +229,12 @@ class _PostTabState extends State<PostTab> with WidgetsBindingObserver {
   void initState() {
     super.initState();
     WidgetsBinding.instance.addObserver(this);
-    _setUpCamera();
+    // Camera permission が Granted、かつこのタブが実際に必要になった
+    // (active)後にだけ controller を作る lazy-init。PostTab は PageView の
+    // 隣接ページとして Home 到達直後から widget 自体は組み立てられ得るが、
+    // 起動直後は active が false なので、ここではまだ initialize() を
+    // 呼ばない(=OS permission dialog も出ない)。
+    _refreshCameraPermission();
     _reloadDraftCount();
   }
 
@@ -226,6 +245,9 @@ class _PostTabState extends State<PostTab> with WidgetsBindingObserver {
     // (保存・投稿・削除は他画面で起きるため、ここでしか気づけない)。
     if (!oldWidget.active && widget.active) {
       _reloadDraftCount();
+      // Settings から戻って許可した直後に Camera タブへ来ることもあるため、
+      // active になるたびに現況を読み直す。
+      _refreshCameraPermission();
     }
   }
 
@@ -257,6 +279,20 @@ class _PostTabState extends State<PostTab> with WidgetsBindingObserver {
     if (state == AppLifecycleState.inactive) {
       _disposeCamera();
     } else if (state == AppLifecycleState.resumed) {
+      // Settings からの帰還も含め、実際の permission 状態を必ず読み直して
+      // から(Granted かつ active のときだけ)initialize() する。ここでも
+      // Permission.camera.request() は絶対に呼ばない。
+      _refreshCameraPermission();
+    }
+  }
+
+  /// 実際の OS camera permission status を読み直す(要求はしない)。
+  /// Granted かつこのタブが active なら、そのまま lazy-init へ進む。
+  Future<void> _refreshCameraPermission() async {
+    final granted = await AppPermissions.isGranted(AppPermissionKind.camera);
+    if (!mounted) return;
+    setState(() => _cameraPermissionGranted = granted);
+    if (granted && widget.active) {
       _setUpCamera();
     }
   }
@@ -280,6 +316,9 @@ class _PostTabState extends State<PostTab> with WidgetsBindingObserver {
 
   Future<void> _setUpCamera() async {
     if (_settingUp || _controller != null) return;
+    // Granted を確認する前に initialize() を呼ぶと、camera プラグインが
+    // 内部で OS permission dialog を出してしまう。ここが最後の砦。
+    if (_cameraPermissionGranted != true) return;
     _settingUp = true;
     try {
       final cameras =
@@ -653,6 +692,17 @@ class _PostTabState extends State<PostTab> with WidgetsBindingObserver {
   }
 
   Widget _cameraStage(BuildContext context) {
+    final permissionGranted = _cameraPermissionGranted;
+    if (permissionGranted == null) {
+      // まだ現況を読んでいる最中。ここでは何も要求しない。
+      return const Center(
+        child: CircularProgressIndicator(color: BloomColors.primaryContainer),
+      );
+    }
+    if (!permissionGranted) {
+      return _permissionDeniedView();
+    }
+
     final controller = _controller;
     final error = _cameraError;
 
@@ -679,6 +729,48 @@ class _PostTabState extends State<PostTab> with WidgetsBindingObserver {
         _leftTools(),
         Expanded(child: Center(child: _filterSwipeArea(controller))),
         _rightRail(),
+      ],
+    );
+  }
+
+  /// Camera permission が Denied のときの表示。ここから OS permission
+  /// dialog を再表示することはせず(=勝手に再要求しない)、設定アプリへの
+  /// 導線だけを見せる。カメラだけが使えなくなり、他の機能には影響しない。
+  Widget _permissionDeniedView() {
+    return Stack(
+      children: [
+        Center(
+          child: Padding(
+            padding: const EdgeInsets.symmetric(horizontal: 32),
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                const Icon(Icons.camera_alt_outlined, color: Colors.white54, size: 32),
+                const SizedBox(height: 12),
+                Text(
+                  'カメラへのアクセスが必要です',
+                  style: BloomText.bodySm.copyWith(color: Colors.white70),
+                  textAlign: TextAlign.center,
+                ),
+                const SizedBox(height: 16),
+                OutlinedButton(
+                  onPressed: openAppSettings,
+                  style: OutlinedButton.styleFrom(
+                    foregroundColor: Colors.white,
+                    side: const BorderSide(color: Colors.white38),
+                    shape: const StadiumBorder(),
+                  ),
+                  child: const Text('設定を開く'),
+                ),
+              ],
+            ),
+          ),
+        ),
+        Positioned(
+          top: 4,
+          left: 12,
+          child: _homeButton(),
+        ),
       ],
     );
   }
