@@ -1,3 +1,5 @@
+import 'dart:io';
+
 import 'package:permission_handler/permission_handler.dart';
 
 /// 初回セットアップ画面(Consent/Permission)で扱う4種類の OS permission。
@@ -97,7 +99,14 @@ abstract final class AppPermissions {
   /// 位置情報が要る。ここでは scan/advertise が揃っているかどうかを
   /// 実質的なゲートとする([BleProximityService] の判定と揃えている)。
   /// 12未満の端末ではこの2つは OS 側で自動的に granted 扱いになる。
+  ///
+  /// iOS には `bluetoothScan`/`bluetoothAdvertise`/`bluetoothConnect` が
+  /// 実装されておらず、常に非 granted を返してしまう。iOS では
+  /// CoreBluetooth 用の `Permission.bluetooth` のみを見る。
   static Future<PermissionReadout> _readBluetooth() async {
+    if (Platform.isIOS) {
+      return _readout(await Permission.bluetooth.status);
+    }
     final scan = await Permission.bluetoothScan.status;
     final advertise = await Permission.bluetoothAdvertise.status;
     return (
@@ -107,6 +116,9 @@ abstract final class AppPermissions {
   }
 
   static Future<PermissionReadout> _requestBluetooth() async {
+    if (Platform.isIOS) {
+      return _readout(await Permission.bluetooth.request());
+    }
     final statuses = await [
       Permission.bluetoothScan,
       Permission.bluetoothAdvertise,
