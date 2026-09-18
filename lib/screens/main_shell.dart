@@ -441,7 +441,6 @@ class _MainShellState extends State<MainShell> with WidgetsBindingObserver {
                         api: widget.api,
                         profile: widget.profile,
                         onProfileChanged: widget.onProfileChanged,
-                        onSignOut: widget.onSignOut,
                         onToast: showToast,
                         proximity: _proximity,
                         onOpenSettings: () =>
