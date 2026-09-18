@@ -23,7 +23,6 @@ class ProfileTab extends StatefulWidget {
     required this.api,
     required this.profile,
     required this.onProfileChanged,
-    required this.onSignOut,
     required this.onToast,
     required this.proximity,
     required this.onOpenSettings,
@@ -32,7 +31,6 @@ class ProfileTab extends StatefulWidget {
   final BloomApi api;
   final Profile profile;
   final void Function(Profile profile) onProfileChanged;
-  final VoidCallback onSignOut;
 
   /// フレンド一覧からフレンド追加シートを開くために渡す
   /// （MainShell が保持する常時スキャン中のインスタンスをそのまま使う）。
@@ -84,6 +82,16 @@ class _ProfileTabState extends State<ProfileTab> {
       });
       widget.onToast('読み込めませんでした');
     }
+  }
+
+  /// loading/error 中は「0」を架空の確定値として出さないための表示用文字列。
+  /// (`_posts`/`_friends` は取得に成功したときしか更新しないので、
+  /// 数値そのものは信頼できるが、まだ一度も読み込めていない/失敗した
+  /// 直後はプレースホルダにする)
+  String _statValue(int count) {
+    if (_loading) return '…';
+    if (_error) return '—';
+    return '$count';
   }
 
   Future<void> _edit() async {
@@ -168,13 +176,20 @@ class _ProfileTabState extends State<ProfileTab> {
           const SizedBox(height: 16),
           Divider(color: colors.outlineVariant, height: 1),
           const SizedBox(height: 14),
-          _rowButton(
-            colors,
-            'フレンド ${_friends.length}人',
-            onTap: _openFriends,
+          Row(
+            children: [
+              _StatLabel(
+                colors: colors,
+                text: '投稿 ${_statValue(_posts.length)}',
+              ),
+              const SizedBox(width: 22),
+              _StatLabel(
+                colors: colors,
+                text: 'フレンド ${_statValue(_friends.length)}',
+                onTap: _openFriends,
+              ),
+            ],
           ),
-          const SizedBox(height: 8),
-          _rowButton(colors, 'ログアウト', onTap: widget.onSignOut),
           const SizedBox(height: 18),
           if (_loading)
             Padding(
@@ -275,34 +290,32 @@ class _ProfileTabState extends State<ProfileTab> {
       ),
     );
   }
+}
 
-  Widget _rowButton(BloomColorsExt colors, String label, {VoidCallback? onTap}) {
+/// プロフィール本文の stats 行（「投稿 N」「フレンド N」）に使う 1 項目。
+/// [onTap] を渡すとタップ可能になる(フレンド → FriendsScreen)。
+/// 投稿数側は [onTap] を渡さないのでタップ不可。
+class _StatLabel extends StatelessWidget {
+  const _StatLabel({required this.colors, required this.text, this.onTap});
+
+  final BloomColorsExt colors;
+  final String text;
+  final VoidCallback? onTap;
+
+  @override
+  Widget build(BuildContext context) {
+    final label = Text(
+      text,
+      style: BloomText.labelLg.copyWith(
+        fontWeight: FontWeight.w700,
+        color: colors.onSurface,
+      ),
+    );
+    if (onTap == null) return label;
     return GestureDetector(
       onTap: onTap,
-      child: Container(
-        height: 42,
-        padding: const EdgeInsets.symmetric(horizontal: 13),
-        alignment: Alignment.centerLeft,
-        decoration: BoxDecoration(
-          color: colors.surfaceContainerLow,
-          border: Border.all(color: colors.outlineVariant),
-          borderRadius: BorderRadius.circular(BloomRadius.base),
-        ),
-        child: Row(
-          children: [
-            Expanded(
-              child: Text(
-                label,
-                style: BloomText.labelLg.copyWith(
-                  fontWeight: FontWeight.w700,
-                  color: colors.onSurface,
-                ),
-              ),
-            ),
-            Icon(Icons.chevron_right, size: 18, color: colors.onSurfaceVariant),
-          ],
-        ),
-      ),
+      behavior: HitTestBehavior.opaque,
+      child: label,
     );
   }
 }
