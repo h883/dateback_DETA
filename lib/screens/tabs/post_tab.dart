@@ -3,13 +3,16 @@ import 'dart:io';
 import 'dart:typed_data';
 
 import 'package:camera/camera.dart';
-import 'package:flutter/foundation.dart' show compute;
+import 'package:flutter/foundation.dart' show compute, debugPrint, kDebugMode;
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart' show DeviceOrientation;
 import 'package:image/image.dart' as img;
 import 'package:permission_handler/permission_handler.dart' show openAppSettings;
 
 import '../../api/bloom_api.dart';
 import '../../device/app_permissions.dart';
+import '../../device/camera_orientation.dart';
+import '../../device/tilt_watcher.dart' show DeviceTilt;
 import '../../drafts/draft_store.dart';
 import '../../models/models.dart';
 import '../../theme/bloom_theme.dart';
@@ -113,6 +116,16 @@ Uint8List _cropAndFilterTo3x2(_CropAndFilterParams params) {
 /// なって初めて [CameraController] を作る(lazy-init)。Denied のときは
 /// [CameraController.initialize] を一切呼ばない(camera プラグイン自身が
 /// 内部で OS permission dialog を出すのを防ぐため)。
+///
+/// アプリ全体を portrait 固定にしたまま端末を物理的に横へ倒して使う
+/// tilt-to-camera の都合上、OS/Flutter の window 自体は回転しない。この
+/// ままだと camera プラグイン(`camera_android_camerax`)の orientation
+/// 判定が Window 回転(常に portrait)を基準にしてしまい、実際の物理的な
+/// 傾きと噛み合わずプレビュー・撮影結果が約90°ズレる。これを避けるため、
+/// tilt 経由で開いた場合([PostTab.activeTilt] が非null)だけ
+/// `CameraController.lockCaptureOrientation` で明示的に
+/// [DeviceOrientation] を固定する([captureOrientationForTilt] 参照)。
+/// 手動で開いた場合は何もせず、既存の(lock しない)挙動のまま。
 class PostTab extends StatefulWidget {
   const PostTab({
     super.key,
@@ -123,6 +136,7 @@ class PostTab extends StatefulWidget {
     required this.onCaptureLocation,
     required this.active,
     required this.onFilterGestureActive,
+    required this.activeTilt,
   });
 
   final BloomApi api;
@@ -154,6 +168,16 @@ class PostTab extends StatefulWidget {
   /// これを見て、その間だけ PageView(Camera ← Home → Profile)の横スワイプ
   /// navigation を止める(既存のタブ切替ジェスチャーと衝突させないため)。
   final void Function(bool active) onFilterGestureActive;
+
+  /// tilt-to-camera によって自動的に Camera が開かれた場合の、その時点の
+  /// [DeviceTilt]。右フリック・ボトムナビ等の**手動**操作で開いた場合は
+  /// 必ず null(MainShell 側で区別済み)。
+  ///
+  /// 非null のときだけ [captureOrientationForTilt] で
+  /// [DeviceOrientation] を求め、`CameraController.lockCaptureOrientation`
+  /// を適用する。手動で開いた場合(null)は、この画面はこれまでどおり
+  /// camera プラグインの既定の(lock しない)orientation 処理に任せる。
+  final DeviceTilt? activeTilt;
 
   @override
   State<PostTab> createState() => _PostTabState();
@@ -249,6 +273,73 @@ class _PostTabState extends State<PostTab> with WidgetsBindingObserver {
       // active になるたびに現況を読み直す。
       _refreshCameraPermission();
     }
+    // widget.activeTilt が変わった(tilt 経由での入場/退場)。PostTab は
+    // PageView 内に残り続けて controller が作り直されないことがあるため、
+    // 既に生きている controller へ明示的に lock/unlock を同期させる
+    // (次回この controller のまま手動で開かれたときに古い lock が
+    // 残らないようにするため)。
+    if (oldWidget.activeTilt != widget.activeTilt) {
+      _syncCaptureOrientationLock();
+    }
+  }
+
+  /// [widget.activeTilt] から求まる目標の capture orientation。
+  /// null なら「lock しない(手動で開いた/傾き対象外)」を意味する。
+  DeviceOrientation? get _captureLockOrientation {
+    final tilt = widget.activeTilt;
+    if (tilt == null) return null;
+    return captureOrientationForTilt(tilt);
+  }
+
+  /// 既に生きている [_controller] へ、現在の [_captureLockOrientation] を
+  /// 反映する(lock すべきなのに未 lock なら lock、lock 不要になったのに
+  /// まだ lock されたままなら unlock)。[_createController] 内での初回適用
+  /// ではカバーできない、「controller は使い回すが tilt context だけ
+  /// 変わった」場合のための同期。
+  Future<void> _syncCaptureOrientationLock() async {
+    final controller = _controller;
+    if (controller == null || !controller.value.isInitialized) return;
+    final target = _captureLockOrientation;
+    final alreadyLocked = controller.value.isCaptureOrientationLocked;
+    if (target == null && !alreadyLocked) return;
+    if (target != null &&
+        alreadyLocked &&
+        controller.value.lockedCaptureOrientation == target) {
+      return;
+    }
+    try {
+      if (target != null) {
+        await controller.lockCaptureOrientation(target);
+      } else {
+        await controller.unlockCaptureOrientation();
+      }
+    } catch (_) {
+      // 付け外しに失敗しても撮影自体は継続できるようにする。
+      return;
+    }
+    // await の間に controller が差し替え/破棄されていたら触れない。
+    if (!mounted || _controller != controller) return;
+    _debugLogCameraSession('orientation-sync', controller);
+  }
+
+  /// 次回 Android 実機確認で必要な orientation 情報を1行にまとめて出す。
+  /// release では絶対に出さない([kDebugMode] のみ)。frame ごとではなく
+  /// 「Camera session 開始時」「orientation lock/unlock を同期したとき」
+  /// だけ呼ぶ(毎frame出力の禁止)。
+  void _debugLogCameraSession(String event, CameraController controller) {
+    if (!kDebugMode) return;
+    final v = controller.value;
+    debugPrint(
+      '[CameraOrientation] event=$event '
+      'entry=${widget.activeTilt == null ? "manual" : "tilt"} '
+      'tilt=${widget.activeTilt} '
+      'lens=${controller.description.lensDirection} '
+      'sensorOrientation=${controller.description.sensorOrientation} '
+      'deviceOrientation=${v.deviceOrientation} '
+      'lockedCaptureOrientation=${v.lockedCaptureOrientation} '
+      'previewSize=${v.previewSize} '
+      'targetLock=$_captureLockOrientation',
+    );
   }
 
   Future<void> _reloadDraftCount() async {
@@ -356,6 +447,11 @@ class _PostTabState extends State<PostTab> with WidgetsBindingObserver {
   /// (依存パッケージがマニフェストへ静的に足す RECORD_AUDIO はここでは
   /// 制御できないが、`enableAudio: false` により実行時にマイクへは
   /// 一切アクセスしない)。
+  ///
+  /// [_setUpCamera](初回)と [_switchCamera](前後カメラ切替)の両方が
+  /// ここを経由するため、tilt 経由で入場した場合の orientation lock も
+  /// この1箇所で適用すれば、切替後の新しい controller にも自動的に
+  /// 引き継がれる(=前後カメラ切替のたびに90°ズレが再発することはない)。
   Future<CameraController?> _createController(
     CameraDescription description,
   ) async {
@@ -369,11 +465,29 @@ class _PostTabState extends State<PostTab> with WidgetsBindingObserver {
       await controller.dispose();
       return null;
     }
+    // tilt-to-camera で開いた場合だけ、実際に検知した傾きに対応する
+    // DeviceOrientation を明示的に lock する。camera package 自身の
+    // CameraPreview / still capture / video recording が、いずれもこの
+    // 同じ lock 値を orientation の source として使うようになる
+    // (`camera_preview.dart` の `_getApplicableOrientation`、
+    // `camera_android_camerax` の `lockCaptureOrientation` 実装を確認済み。
+    // 詳細は [captureOrientationForTilt] のコメント参照)。手動で開いた
+    // 場合(activeTilt == null)はこれまでどおり何もせず、camera plugin
+    // 既定の(portrait window 前提の)orientation 処理に委ねる。
+    final lockOrientation = _captureLockOrientation;
+    if (lockOrientation != null) {
+      try {
+        await controller.lockCaptureOrientation(lockOrientation);
+      } catch (_) {
+        // lock に失敗しても撮影自体は続行できるようにする(致命的にしない)。
+      }
+    }
     try {
       await controller.setFlashMode(FlashMode.off);
     } catch (_) {
       // フラッシュが無い端末では失敗して当然。既定値のままにする。
     }
+    if (mounted) _debugLogCameraSession('controller-ready', controller);
     return controller;
   }
 
