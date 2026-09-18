@@ -1,3 +1,5 @@
+import 'dart:io' show Platform;
+
 import 'package:flutter/rendering.dart' show BoxConstraints, Size;
 import 'package:flutter/services.dart' show DeviceOrientation;
 
@@ -215,8 +217,23 @@ Size tiltPreviewFrameLogicalSize(
 ///
 /// null(手動 entry)・[DeviceTilt.portrait]・[DeviceTilt.landscapeOther]
 /// では 0(無回転)を返す。
+///
+/// ## iOS では補正しない
+///
+/// この quarterTurns=1 の補正値は Android 実機(Xperia、`camera` パッケージの
+/// iOS/Android 双方で共有される `camera_android_camerax` 実装)で確認された
+/// 「`lockCaptureOrientation` 済みのはずなのに映像内容だけ90°ズレる」という
+/// **CameraX 固有の描画クセ**を打ち消すためのものであり、物理法則から導いた
+/// 値ではない(この点は関数コメント冒頭に明記されている通り)。
+///
+/// iOS では `camera` パッケージが `camera_avfoundation` 実装に切り替わり、
+/// AVFoundation の `AVCaptureVideoPreviewLayer` は `lockCaptureOrientation`
+/// が指定した向きへ自前で正しく映像を回転させるため、CameraX と同じズレは
+/// 起きない。CameraX 用の補正をそのまま iOS にも適用すると、既に正しい映像に
+/// 追加で90°回してしまい、かえって誤った向きになる。そのため iOS では常に
+/// 0(無回転)を返す。
 int previewQuarterTurnsForTilt(DeviceTilt? tilt) {
-  if (tilt == null) return 0;
+  if (tilt == null || Platform.isIOS) return 0;
   return switch (tilt) {
     DeviceTilt.landscapeShutterRight => 1,
     DeviceTilt.landscapeOther || DeviceTilt.portrait => 0,

@@ -26,10 +26,7 @@ class DefaultFirebaseOptions {
       case TargetPlatform.android:
         return android;
       case TargetPlatform.iOS:
-        throw UnsupportedError(
-          'DefaultFirebaseOptions have not been configured for ios - '
-          'you can reconfigure this by running the FlutterFire CLI again.',
-        );
+        return ios;
       case TargetPlatform.macOS:
         throw UnsupportedError(
           'DefaultFirebaseOptions have not been configured for macos - '
@@ -58,5 +55,16 @@ class DefaultFirebaseOptions {
     messagingSenderId: '851433910657',
     projectId: 'nova-hack2026-366bf',
     storageBucket: 'nova-hack2026-366bf.firebasestorage.app',
+  );
+
+  static const FirebaseOptions ios = FirebaseOptions(
+    apiKey: 'AIzaSyDJkXN3TzN-Jovk8ykB7fuS9GkK22SfAOY',
+    appId: '1:851433910657:ios:49e7dcfd306e453a447880',
+    messagingSenderId: '851433910657',
+    projectId: 'nova-hack2026-366bf',
+    storageBucket: 'nova-hack2026-366bf.firebasestorage.app',
+    iosBundleId: 'com.novahack.app',
+    iosClientId:
+        '851433910657-v9230712nd0tcl72031gc6l221uv1ahq.apps.googleusercontent.com',
   );
 }
