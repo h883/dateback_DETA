@@ -1,5 +1,6 @@
 import 'dart:async';
 import 'dart:io';
+import 'dart:math' as math;
 import 'dart:typed_data';
 
 import 'package:camera/camera.dart';
@@ -61,6 +62,14 @@ class PostFailure extends PostOutcome {
 /// だけをこの比率に合わせ、実際に保存されるファイルはセンサーのネイティブ
 /// 比率のまま(Phase 7 の制約として報告する)。
 const _targetAspect = 3 / 2;
+
+/// dateback の日付表示(いわゆる dateback スタンプ)は 35mm のときだけ。
+/// 8mm では表示しない。副作用の無い純粋関数(widget test 用)。
+bool showDatebackForMode(PostKind mode) => mode == PostKind.film35mm;
+
+/// 8mm のフィルムゲート表現([Film8mmEffects])は 8mm のときだけ。
+/// 35mm では表示しない。副作用の無い純粋関数(widget test 用)。
+bool showFilmGateForMode(PostKind mode) => mode == PostKind.film8mm;
 
 /// [_cropAndFilterTo3x2] へ渡す引数。[compute] は引数を1つしか渡せないため
 /// まとめておく。
@@ -246,6 +255,16 @@ class _PostTabState extends State<PostTab> with WidgetsBindingObserver {
   /// portrait Row でも、tilt entry で正立させた後の帯の厚みとしても使う)。
   static const _leftToolsWidth = 62.0;
   static const _rightRailWidth = 100.0;
+
+  /// 左側の flash/camera switch/timer 用ボタン(既定の [_toolChip] は
+  /// 44/19)。実機で小さく見えたため、既定の約1.27倍(直径)・約1.26倍
+  /// (アイコン)へ大きくした。drafts のボタンはここでは対象外(既定のまま)。
+  static const _leftToolsChipDiameter = 56.0;
+  static const _leftToolsChipIconSize = 24.0;
+
+  /// flash/camera switch/timer の縦方向の間隔(既定の10から約1.2倍)。
+  /// drafts との間隔はここでは対象外(既定の10のまま)。
+  static const _leftToolsChipGap = 12.0;
 
   FlashMode _flashMode = FlashMode.off;
 
@@ -1142,7 +1161,8 @@ class _PostTabState extends State<PostTab> with WidgetsBindingObserver {
   /// 両方から共有する。
   List<Widget> _previewOverlayChildren() => [
         if (_recording) const _RecordDot(),
-        Positioned(right: 12, bottom: 10, child: _stamp()),
+        // dateback の日付は 35mm だけ(8mm では出さない)。
+        if (showDatebackForMode(_mode)) _datebackStamp(),
         if (_countdownRemaining != null) _countdownOverlay(),
         if (_mode == PostKind.film35mm && _stillPreview == null && !_cropping)
           Positioned(
@@ -1238,12 +1258,19 @@ class _PostTabState extends State<PostTab> with WidgetsBindingObserver {
   /// live/recording も同じ経路を通るため自動的に揃う)。`Film8mmEffects`
   /// (フィルムゲート・グレイン・ジッター)は回転後の内容の**外側**に
   /// 適用するので、フィルム質感自体の向きは変わらない。
+  ///
+  /// [Film8mmEffects] のフィルムゲートは、通常(手動 entry)は左辺に
+  /// 表示するのが正しいが、tilt entry では映像内容だけ回っていて
+  /// [Film8mmEffects] 自身はその回転の外側にあるため、そのままだと
+  /// 実機で見て物理下側にズレる。[previewQuarterTurns] が非0のときだけ
+  /// [FilmGateEdge.top] を渡し、window の論理TOP(=tilt 時にユーザーから
+  /// 見て左辺になる。[uiQuarterTurnsForTilt] の根拠と同じ回転)に置く。
   Widget _previewVideoContent(
     CameraController controller, {
     required double boxAspect,
     int previewQuarterTurns = 0,
   }) {
-    final filmActive = _mode == PostKind.film8mm;
+    final filmActive = showFilmGateForMode(_mode);
     // RotatedBox は奇数 quarterTurns のとき子へ縦横入れ替えた制約を渡す。
     // そのぶん _fillPreview 側が cover すべき box の形も入れ替えておかないと、
     // 回転後に隙間(letterbox)や overflow が出る。
@@ -1259,7 +1286,11 @@ class _PostTabState extends State<PostTab> with WidgetsBindingObserver {
     if (previewQuarterTurns != 0) {
       content = RotatedBox(quarterTurns: previewQuarterTurns, child: content);
     }
-    return Film8mmEffects(active: filmActive, child: content);
+    return Film8mmEffects(
+      active: filmActive,
+      gateEdge: previewQuarterTurns != 0 ? FilmGateEdge.top : FilmGateEdge.left,
+      child: content,
+    );
   }
 
   /// プレビューを歪めずに [boxAspect] の枠いっぱいに収める。
@@ -1355,6 +1386,28 @@ class _PostTabState extends State<PostTab> with WidgetsBindingObserver {
     );
   }
 
+  /// 実在するコンパクトカメラの dateback 印字のように、右下ではあるが
+  /// 端(枠の角)から少し内側に配置する。固定 px ではなく短辺の
+  /// [_datebackInsetFraction](3〜5%目安、4%を採用)を使うことで、
+  /// 手動 entry(3:2)・tilt entry(回転後 3:2 相当)のどちらでも、また
+  /// 端末のframe実サイズが変わっても同じ見た目の余白になる。
+  static const _datebackInsetFraction = 0.04;
+
+  Widget _datebackStamp() {
+    return Positioned.fill(
+      child: LayoutBuilder(
+        builder: (context, constraints) {
+          final shortSide = math.min(constraints.maxWidth, constraints.maxHeight);
+          final inset = shortSide * _datebackInsetFraction;
+          return Padding(
+            padding: EdgeInsets.only(right: inset, bottom: inset),
+            child: Align(alignment: Alignment.bottomRight, child: _stamp()),
+          );
+        },
+      ),
+    );
+  }
+
   Widget _stamp() {
     final nowDate = DateTime.now();
     final y = (nowDate.year % 100).toString().padLeft(2, '0');
@@ -1385,22 +1438,32 @@ class _PostTabState extends State<PostTab> with WidgetsBindingObserver {
         mainAxisAlignment: MainAxisAlignment.center,
         children: [
           if (canFlash) ...[
-            _toolChip(icon: _flashIcon(), onTap: _cycleFlash),
-            const SizedBox(height: 10),
+            _toolChip(
+              icon: _flashIcon(),
+              onTap: _cycleFlash,
+              diameter: _leftToolsChipDiameter,
+              iconSize: _leftToolsChipIconSize,
+            ),
+            const SizedBox(height: _leftToolsChipGap),
           ],
           if (canFlip) ...[
             _toolChip(
               icon: Icons.cameraswitch_outlined,
               onTap: _switchingCamera ? null : _switchCamera,
+              diameter: _leftToolsChipDiameter,
+              iconSize: _leftToolsChipIconSize,
             ),
-            const SizedBox(height: 10),
+            const SizedBox(height: _leftToolsChipGap),
           ],
           _toolChip(
             icon: Icons.timer_outlined,
             onTap: _cycleTimer,
             badge: _timerSeconds == 0 ? 'off' : '$_timerSeconds',
+            diameter: _leftToolsChipDiameter,
+            iconSize: _leftToolsChipIconSize,
           ),
           // 下書きが無いときは、控えめであっても常時ここへ出さない。
+          // (drafts は今回のサイズ変更の対象外。既定サイズのまま)
           if (_draftCount > 0) ...[
             const SizedBox(height: 10),
             _toolChip(
@@ -1424,12 +1487,14 @@ class _PostTabState extends State<PostTab> with WidgetsBindingObserver {
     required IconData icon,
     VoidCallback? onTap,
     String? badge,
+    double diameter = 44,
+    double iconSize = 19,
   }) {
     return GestureDetector(
       onTap: onTap,
       child: Container(
-        width: 44,
-        height: 44,
+        width: diameter,
+        height: diameter,
         alignment: Alignment.center,
         decoration: BoxDecoration(
           shape: BoxShape.circle,
@@ -1440,7 +1505,7 @@ class _PostTabState extends State<PostTab> with WidgetsBindingObserver {
           clipBehavior: Clip.none,
           alignment: Alignment.center,
           children: [
-            Icon(icon, size: 19, color: Colors.white),
+            Icon(icon, size: iconSize, color: Colors.white),
             if (badge != null)
               Positioned(
                 right: -3,
