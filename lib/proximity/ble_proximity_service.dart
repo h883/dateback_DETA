@@ -1,4 +1,5 @@
 import 'dart:async';
+import 'dart:io';
 import 'dart:typed_data';
 
 import 'package:flutter_ble_peripheral/flutter_ble_peripheral.dart';
@@ -15,9 +16,37 @@ import 'proximity_service.dart';
 /// 電波に載せるのはサーバー発行の 4 バイト beaconId だけで、uid は載せない
 /// （仕様書 3.15）。beaconId から uid への解決はサーバーが行う。
 class BleProximityService implements ProximityService {
-  /// 本SNS を示すサービス UUID。この値でスキャンを絞る。
-  static final Guid serviceUuid =
-      Guid('0000b100-0000-1000-8000-00805f9b34fb');
+  /// サービス UUID の共通サフィックス。beaconId（8桁hex）を先頭に
+  /// 埋め込んだ UUID を端末ごとに生成して広告する。
+  ///
+  /// 【既知の制約】iOS の CoreBluetooth はペリフェラル広告に製造者データを
+  /// 一切含められない（Apple 全体の仕様上の制約で、サービス UUID と
+  /// ローカルネームしか広告できない）。そのため beaconId を製造者データ
+  /// だけに頼ると iOS 端末は一切検知できない（iOS→他端末はもちろん、
+  /// iOS→iOS でも同様）。
+  ///
+  /// 対策として、beaconId をサービス UUID 自体に埋め込んで広告する。
+  /// Android は今まで通り製造者データを見て検知できるので互換性を保ちつつ
+  /// （Android⇄Android の挙動・プロトコルは変更しない）、製造者データが
+  /// 読めない相手（iOS）に対してはサービス UUID から beaconId を読み取る
+  /// フォールバックで検知する。
+  static const _serviceUuidSuffix = '-0000-1000-8000-00805f9b34fb';
+
+  static Guid _serviceUuidFor(String beaconId) =>
+      Guid('$beaconId$_serviceUuidSuffix');
+
+  /// スキャン結果のサービス UUID 一覧から beaconId を取り出す。
+  /// 一致しなければ null。
+  static String? _beaconIdFromServiceUuids(List<Guid> uuids) {
+    for (final uuid in uuids) {
+      final full = uuid.str128;
+      if (full.length == 36 && full.endsWith(_serviceUuidSuffix)) {
+        final id = full.substring(0, 8);
+        if (RegExp(r'^[0-9a-fA-F]{8}$').hasMatch(id)) return id.toLowerCase();
+      }
+    }
+    return null;
+  }
 
   final _peripheral = FlutterBlePeripheral();
   final _status = StreamController<ProximityStatus>.broadcast();
@@ -129,8 +158,11 @@ class BleProximityService implements ProximityService {
     });
 
     try {
+      // beaconId をサービス UUID 自体に埋め込む端末（iOS）があるため、
+      // UUID の完全一致では絞り込めない。フィルタ無しでスキャンし、
+      // _beaconIdOf() 側で製造者データ／サービス UUID の両方から判定する。
       // timeout を指定しなければ stopScan() するまで回り続ける。
-      await FlutterBluePlus.startScan(withServices: [serviceUuid]);
+      await FlutterBluePlus.startScan();
       _continuousScanActive = true;
     } catch (_) {
       _continuousScanActive = false;
@@ -204,7 +236,7 @@ class BleProximityService implements ProximityService {
     try {
       await _peripheral.start(
         advertiseData: AdvertiseDataCore(
-          serviceUuid: serviceUuid.str,
+          serviceUuid: _serviceUuidFor(myBeaconId).str,
           manufacturerId: _manufacturerId,
           manufacturerData: _withFreshnessByte(_hexToBytes(myBeaconId)),
         ),
@@ -226,16 +258,24 @@ class BleProximityService implements ProximityService {
     }
 
     // 【実験】1秒ごとに末尾1バイトだけ変えて広告を作り直す。
+    //
+    // iOS の CoreBluetooth は広告の stop/start を高頻度で繰り返すと
+    // ピリフェラルマネージャが実際には広告を有効化しないまま失敗する
+    // ことがある（実機で電波が一切出なくなる症状で判明）。この対策は
+    // Android の BLE チップ重複除去フィルター回避が目的なので、iOS では
+    // 行わない。
     _freshnessTimer?.cancel();
-    _freshnessTimer = Timer.periodic(const Duration(seconds: 1), (_) async {
-      if (_disposed || _currentBeaconId == null) return;
-      _freshnessCounter = (_freshnessCounter + 1) & 0xff;
-      _advertising = false;
-      try {
-        await _peripheral.stop();
-      } catch (_) {}
-      await _advertise(_currentBeaconId!);
-    });
+    if (!Platform.isIOS) {
+      _freshnessTimer = Timer.periodic(const Duration(seconds: 1), (_) async {
+        if (_disposed || _currentBeaconId == null) return;
+        _freshnessCounter = (_freshnessCounter + 1) & 0xff;
+        _advertising = false;
+        try {
+          await _peripheral.stop();
+        } catch (_) {}
+        await _advertise(_currentBeaconId!);
+      });
+    }
   }
 
   Uint8List _withFreshnessByte(Uint8List id) {
@@ -262,14 +302,20 @@ class BleProximityService implements ProximityService {
   }
 
   /// 広告から beaconId を取り出す。本SNS の広告でなければ null。
+  ///
+  /// まず製造者データを見る（Android⇄Android はこれで従来通り検知できる）。
+  /// 製造者データが読めない相手（iOS。CoreBluetooth の制約で製造者データを
+  /// 広告できない）には、サービス UUID に埋め込まれた beaconId で判定する。
   String? _beaconIdOf(ScanResult result) {
     final data = result.advertisementData.manufacturerData[_manufacturerId];
     // 【実験】末尾1バイトはフレッシュネス用なので identity には含めない。
-    if (data == null || data.length != 5) return null;
-    return data
-        .take(4)
-        .map((b) => b.toRadixString(16).padLeft(2, '0'))
-        .join();
+    if (data != null && data.length == 5) {
+      return data
+          .take(4)
+          .map((b) => b.toRadixString(16).padLeft(2, '0'))
+          .join();
+    }
+    return _beaconIdFromServiceUuids(result.advertisementData.serviceUuids);
   }
 
   /// 現況を読むだけで、絶対に OS permission dialog は出さない
