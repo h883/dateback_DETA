@@ -280,6 +280,10 @@ class _PostTabState extends State<PostTab> with WidgetsBindingObserver {
     // 残らないようにするため)。
     if (oldWidget.activeTilt != widget.activeTilt) {
       _syncCaptureOrientationLock();
+      // capture orientation の付け外しの成否とは無関係に、UI chrome の
+      // 回転量は widget.activeTilt だけで決まる([uiQuarterTurnsForTilt])
+      // ので、こちらは常にログする。
+      _debugLogUiOrientation();
     }
   }
 
@@ -339,6 +343,19 @@ class _PostTabState extends State<PostTab> with WidgetsBindingObserver {
       'lockedCaptureOrientation=${v.lockedCaptureOrientation} '
       'previewSize=${v.previewSize} '
       'targetLock=$_captureLockOrientation',
+    );
+  }
+
+  /// Camera **UI chrome**(tools・撮影オーバーレイ等、映像そのものは含まない)
+  /// の回転量。[_debugLogCameraSession] と同様 [kDebugMode] 限定・
+  /// 呼び出し箇所を絞った1回だけのログ(毎frame出力の禁止)。
+  void _debugLogUiOrientation() {
+    if (!kDebugMode) return;
+    debugPrint(
+      '[CameraUIOrientation] '
+      'entry=${widget.activeTilt == null ? "manual" : "tilt"} '
+      'tilt=${widget.activeTilt} '
+      'quarterTurns=${uiQuarterTurnsForTilt(widget.activeTilt)}',
     );
   }
 
@@ -487,7 +504,10 @@ class _PostTabState extends State<PostTab> with WidgetsBindingObserver {
     } catch (_) {
       // フラッシュが無い端末では失敗して当然。既定値のままにする。
     }
-    if (mounted) _debugLogCameraSession('controller-ready', controller);
+    if (mounted) {
+      _debugLogCameraSession('controller-ready', controller);
+      _debugLogUiOrientation();
+    }
     return controller;
   }
 
@@ -838,11 +858,100 @@ class _PostTabState extends State<PostTab> with WidgetsBindingObserver {
       );
     }
 
-    return Row(
+    // 手動 entry(または tilt-to-camera の対象外の向き)なら、既存の
+    // portrait レイアウトをそのまま使う(無変更)。CameraPreview は
+    // portrait window 前提の camera plugin 既定の orientation 処理のまま。
+    final quarterTurns = uiQuarterTurnsForTilt(widget.activeTilt);
+    if (quarterTurns == 0) {
+      return Row(
+        children: [
+          _leftTools(),
+          Expanded(child: Center(child: _filterSwipeArea(controller))),
+          _rightRail(),
+        ],
+      );
+    }
+
+    return _tiltCameraStage(controller, quarterTurns);
+  }
+
+  /// tilt-to-camera 経由で開いた場合の Camera UI。
+  ///
+  /// video layer([_previewVideoOnly])は既存の portrait レイアウトと
+  /// 全く同じ `Row([SizedBox(62), Expanded(Center(AspectRatio(3:2))),
+  /// SizedBox(100)])` の中に、無回転のまま独立して描画する
+  /// (=CameraPreview そのものへは一切追加の回転を加えない)。
+  ///
+  /// chrome(tools・撮影オーバーレイ・filter swipe のヒットエリア)は、
+  /// 個々のアイコンをその場で回すのではなく、まとまり単位で
+  /// [RotatedBox] へ包むことで「向きだけ直って位置は portrait のまま」に
+  /// ならないようにする。overlay 用の `Row` は video 用の `Row` と全く
+  /// 同じ外枠構造(SizedBox(62)/Expanded/Center/AspectRatio)を使うことで、
+  /// video の枠と寸分違わず重なる(`RotatedBox` は自分の子にだけ縦横
+  /// 入れ替えた制約を渡すため、この外枠の sizing 計算自体には影響しない)。
+  Widget _tiltCameraStage(CameraController controller, int quarterTurns) {
+    return Stack(
       children: [
-        _leftTools(),
-        Expanded(child: Center(child: _filterSwipeArea(controller))),
-        _rightRail(),
+        // video layer(無回転)。
+        Row(
+          children: [
+            const SizedBox(width: 62),
+            Expanded(child: Center(child: _previewVideoOnly(controller))),
+            const SizedBox(width: 100),
+          ],
+        ),
+        // 撮影オーバーレイ(record dot / stamp / countdown / filter dots)。
+        // video と全く同じ枠の中で、中身だけ正立させる。
+        IgnorePointer(
+          child: Row(
+            children: [
+              const SizedBox(width: 62),
+              Expanded(
+                child: Center(
+                  child: AspectRatio(
+                    aspectRatio: _targetAspect,
+                    child: RotatedBox(
+                      quarterTurns: quarterTurns,
+                      child: _previewOverlayOnly(),
+                    ),
+                  ),
+                ),
+              ),
+              const SizedBox(width: 100),
+            ],
+          ),
+        ),
+        // filter swipe のヒットエリア(video と同じ枠)。
+        Row(
+          children: [
+            const SizedBox(width: 62),
+            Expanded(
+              child: Center(
+                child: AspectRatio(
+                  aspectRatio: _targetAspect,
+                  child: _tiltFilterSwipeArea(),
+                ),
+              ),
+            ),
+            const SizedBox(width: 100),
+          ],
+        ),
+        // tools(flash・camera switch・timer・drafts・home・shutter・
+        // 35mm/8mm セレクター・撮影確認 UI)。leftTools/rightRail を
+        // 1つの Row としてまとめてから丸ごと回すことで、landscape カメラ
+        // として自然な配置(操作全体が正しい向き・位置関係で並ぶ)にする。
+        Positioned.fill(
+          child: RotatedBox(
+            quarterTurns: quarterTurns,
+            child: Row(
+              children: [
+                _leftTools(),
+                const Expanded(child: SizedBox.shrink()),
+                _rightRail(),
+              ],
+            ),
+          ),
+        ),
       ],
     );
   }
@@ -938,13 +1047,68 @@ class _PostTabState extends State<PostTab> with WidgetsBindingObserver {
     setState(() => _filter = values[(next + values.length) % values.length]);
   }
 
+  /// tilt-to-camera 中の filter swipe。window 自体は portrait 固定のまま
+  /// UI 全体を [uiQuarterTurnsForTilt] ぶん回転させて見せているため、
+  /// ユーザーが物理的に「横方向」へスワイプする動きは、window の生座標
+  /// (portrait 基準、無回転)では**縦方向**の指の動き(dy)として届く。
+  ///
+  /// 対応根拠: `landscapeShutterRight`(portraitUp から反時計回り90°)へ
+  /// 端末を傾けた状態で、window のネイティブ +x 軸(dx>0 方向)は重力基準の
+  /// 「上」を、window のネイティブ +y 軸(dy>0 方向)は重力基準の「右」を
+  /// 指す(portraitUp から反時計回り90°回転させた単位ベクトルの計算による。
+  /// [captureOrientationForTilt] の回転方向の根拠と同じ回転を使っている)。
+  /// つまり「ユーザーから見て右へスワイプ」は window 座標では dy>0
+  /// (下方向のドラッグ)として届く。手動 entry 用の
+  /// onHorizontalDragUpdate/dx ベースの判定([_filterSwipeArea])と
+  /// 符号の意味(正 = 右)はそのまま保たれるため、軸を dx→dy、
+  /// onHorizontalDrag*→onVerticalDrag* に差し替えるだけでよい。
+  Widget _tiltFilterSwipeArea() {
+    if (_mode != PostKind.film35mm || _busy) return const SizedBox.shrink();
+
+    return Listener(
+      onPointerDown: (_) => widget.onFilterGestureActive(true),
+      onPointerUp: (_) => widget.onFilterGestureActive(false),
+      onPointerCancel: (_) => widget.onFilterGestureActive(false),
+      child: GestureDetector(
+        behavior: HitTestBehavior.opaque,
+        onVerticalDragStart: (_) => _filterDragAccum = 0,
+        onVerticalDragUpdate: (details) {
+          _filterDragAccum += details.delta.dy;
+        },
+        onVerticalDragEnd: (_) {
+          if (_filterDragAccum.abs() > _filterSwipeThreshold) {
+            _changeFilter(_filterDragAccum < 0 ? 1 : -1);
+          }
+        },
+        child: const SizedBox.expand(),
+      ),
+    );
+  }
+
+  /// 3:2 の撮影フレームに重ねる、映像以外の固定オーバーレイ
+  /// (録画中インジケーター・日付スタンプ・カウントダウン・filter dots)。
+  /// [_previewFrame](手動 entry)と [_previewOverlayOnly](tilt entry)の
+  /// 両方から共有する。
+  List<Widget> _previewOverlayChildren() => [
+        if (_recording) const _RecordDot(),
+        Positioned(right: 12, bottom: 10, child: _stamp()),
+        if (_countdownRemaining != null) _countdownOverlay(),
+        if (_mode == PostKind.film35mm && _stillPreview == null && !_cropping)
+          Positioned(
+            left: 0,
+            right: 0,
+            bottom: 26,
+            child: IgnorePointer(child: _filterDots()),
+          ),
+      ];
+
   /// 3:2 の撮影フレーム。見えている範囲と投稿される範囲を一致させる中心。
+  /// 手動 entry のときだけ使う(=既存の見た目・widget 構成を完全に維持)。
   ///
   /// フィルムゲート・グレイン・ジッターは [Film8mmEffects](共通実装)を
   /// 映像レイヤーだけに適用し、日付スタンプ・録画中インジケーター・
   /// カウントダウンはその上の固定レイヤーとして揺らさない。
   Widget _previewFrame(CameraController controller) {
-    final filmActive = _mode == PostKind.film8mm;
     return AspectRatio(
       aspectRatio: _targetAspect,
       child: ClipRRect(
@@ -957,34 +1121,55 @@ class _PostTabState extends State<PostTab> with WidgetsBindingObserver {
           child: Stack(
             fit: StackFit.expand,
             children: [
-              Film8mmEffects(
-                active: filmActive,
-                child: _stillPreview != null
-                    ? Image.memory(_stillPreview!, fit: BoxFit.cover)
-                    : _cropping
-                        ? const Center(
-                            child: CircularProgressIndicator(
-                              color: Colors.white70,
-                            ),
-                          )
-                        : _previewFilter(_fillPreview(controller)),
-              ),
-              if (_recording) const _RecordDot(),
-              Positioned(right: 12, bottom: 10, child: _stamp()),
-              if (_countdownRemaining != null) _countdownOverlay(),
-              if (_mode == PostKind.film35mm &&
-                  _stillPreview == null &&
-                  !_cropping)
-                Positioned(
-                  left: 0,
-                  right: 0,
-                  bottom: 26,
-                  child: IgnorePointer(child: _filterDots()),
-                ),
+              _previewVideoContent(controller),
+              ..._previewOverlayChildren(),
             ],
           ),
         ),
       ),
+    );
+  }
+
+  /// tilt entry 用: 3:2 の撮影フレームのうち、実際の映像ピクセル
+  /// (CameraPreview・静止画プレビュー・crop 中スピナー)だけを描く。
+  /// この layer は tilt-to-camera 中でも**回転しない**
+  /// (要件どおり、preview そのものへの追加回転は行わない)。
+  /// 枠(角丸・黒背景・白い縁取り)は向きに依存しない見た目なので、
+  /// [_previewFrame] と同じくここに含めてよい。
+  Widget _previewVideoOnly(CameraController controller) {
+    return AspectRatio(
+      aspectRatio: _targetAspect,
+      child: ClipRRect(
+        borderRadius: BorderRadius.circular(13),
+        child: Container(
+          decoration: BoxDecoration(
+            color: Colors.black,
+            border: Border.all(color: Colors.white24),
+          ),
+          child: _previewVideoContent(controller),
+        ),
+      ),
+    );
+  }
+
+  /// tilt entry 用: 撮影オーバーレイだけを束ねた widget。
+  /// 背景・枠は持たない(video layer の上に重ねるだけなので、ここに
+  /// 不透明な背景を持たせると video が隠れてしまう)。
+  Widget _previewOverlayOnly() => Stack(children: _previewOverlayChildren());
+
+  /// [_previewFrame]/[_previewVideoOnly] で共有する、実際の映像ピクセル
+  /// 部分(Film8mmEffects 以下)。
+  Widget _previewVideoContent(CameraController controller) {
+    final filmActive = _mode == PostKind.film8mm;
+    return Film8mmEffects(
+      active: filmActive,
+      child: _stillPreview != null
+          ? Image.memory(_stillPreview!, fit: BoxFit.cover)
+          : _cropping
+              ? const Center(
+                  child: CircularProgressIndicator(color: Colors.white70),
+                )
+              : _previewFilter(_fillPreview(controller)),
     );
   }
 
