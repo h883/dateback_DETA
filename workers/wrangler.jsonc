@@ -26,11 +26,25 @@
     }
   ],
 
-  // メディアの実体置き場。R2 は無料枠でもカード登録が要るので、
-  // カード不要で 1 値あたり 25MB まで置ける KV を使っている。
-  "kv_namespaces": [
+  // メディアの実体置き場。
+  //
+  // 以前は KV に置いていたが、KV はストレージ 1GB・書き込み 1,000回/日
+  // （無料枠）と狭く、結果整合性のため投稿直後に 404 が返りうるため R2 へ
+  // 移した。バケットは `npx wrangler r2 bucket create bloom-media` で作る。
+  "r2_buckets": [
     {
       "binding": "MEDIA",
+      "bucket_name": "bloom-media"
+    }
+  ],
+
+  // 移行前のメディアが残っている旧 KV。**読み取りのフォールバック専用**で、
+  // 新しい書き込みはここへ来ない＝ KV がこれ以上増えることはない。
+  // 中身を R2 へ移し終えたら、この節と src/index.ts の legacyKvMedia() を
+  // まとめて消してよい（手順は workers/README.md）。
+  "kv_namespaces": [
+    {
+      "binding": "MEDIA_LEGACY_KV",
       "id": "728fd7b51a3846458c038fd43f32a654"
     }
   ]

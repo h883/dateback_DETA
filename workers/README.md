@@ -1,7 +1,9 @@
 # bloom-api （Cloudflare Workers）
 
-本SNS のバックエンド。投稿・フレンド・閲覧権限を D1 で、画像と動画を KV で管理する。
-KV を選んだ理由と制約は [仕様書 6.1](../仕様書.md) を参照。
+本SNS のバックエンド。投稿・フレンド・閲覧権限を D1 で、画像と動画を **R2** で管理する。
+以前は R2 のカード登録を避けて KV に置いていたが、KV の制約（ストレージ 1GB・
+書き込み 1,000回/日・結果整合性）がメディアに合わないため R2 へ移した。
+経緯は [仕様書 6.1](../仕様書.md) を参照。
 
 仕様書 4.4 のとおり、**投稿を見てよいかどうかの判定はすべてここで行う**。
 API はその時点で閲覧可能な投稿だけを返すので、アプリ側で投稿時刻と閲覧可能時刻を
@@ -14,7 +16,7 @@ API はその時点で閲覧可能な投稿だけを返すので、アプリ側�
 | `src/index.ts` | ルーティングと全エンドポイント |
 | `src/auth.ts` | Firebase ID トークンの検証（JWKS + WebCrypto） |
 | `migrations/0001_init.sql` | D1 のスキーマ |
-| `wrangler.jsonc` | Worker / D1 / KV の設定 |
+| `wrangler.jsonc` | Worker / D1 / R2 / 旧 KV の設定 |
 
 ## セットアップ
 
@@ -26,17 +28,22 @@ npm install
 npx wrangler login
 ```
 
-D1 と KV を作る。それぞれが出力する id を `wrangler.jsonc` の
-`d1_databases[].database_id` と `kv_namespaces[].id` に貼り替える
-（既存の本番環境に繋ぐだけなら、どちらも記載済みなので作り直さない）。
+D1 と R2 バケットを作る。`d1 create` が出力する id は `wrangler.jsonc` の
+`d1_databases[].database_id` に貼り替える（既存の本番環境に繋ぐだけなら
+記載済みなので作り直さない）。
 
 ```bash
 npx wrangler d1 create bloom
 ```
 
 ```bash
-npx wrangler kv namespace create MEDIA
+npx wrangler r2 bucket create bloom-media
 ```
+
+**R2 の有効化には Cloudflare アカウントへの支払い方法の登録が必要になる場合が
+ある。** 無料枠（ストレージ 10GB / Class A 100万・Class B 1,000万 ops 月・
+エグレス無料）に収まっていれば請求は発生しないが、バケット作成が弾かれたら
+その登録を先に済ませること。
 
 スキーマを流す。
 
@@ -93,7 +100,7 @@ npx wrangler dev
 | POST | `/api/friends/requests/:uid/accept` | 承認 |
 | DELETE | `/api/friends/requests/:uid` | 取り消し／却下 |
 | POST | `/api/proximity` | 近距離イベントの記録と閲覧権限交換 |
-| GET | `/api/media/:key` | KV のメディア配信 |
+| GET | `/api/media/:key` | R2 のメディア配信（Range 対応。R2 に無ければ旧 KV を見る） |
 
 ## 閲覧制御のしくみ
 
@@ -107,26 +114,49 @@ author の投稿は visible_until 以前まで見られる」を表す。
 投稿の取得は `VISIBLE_POSTS_SQL` を通す。自分の投稿は常に見え、他人の投稿は
 上の行があり、かつ `posts.created_at <= visible_until` のものだけが返る。
 
-## メディア（KV）の運用上の注意
+## メディア（R2）の運用と、旧 KV からの移行
 
-KV は「消えては困るものを置く永続ストア」だが、読み取り経路がキャッシュの
-ように各地へ配られる作りのため、メディア置き場としては次の癖がある。
+### いまの動き
 
-| 制約（無料枠） | 値 | 効いてくる場所 |
-|---|---|---|
-| ストレージ | **namespace 全体で 1GB** | いちばん先に当たる。35mm は投稿前に長辺 1600px / JPEG quality 85 へ縮小している（`lib/screens/tabs/post_tab.dart`） |
-| 書き込み | 1,000 回／日 | 1 投稿 = 1 write、アイコン変更 = 1 write + 1 delete |
-| 読み取り | 100,000 回／日 | 表示のたびに1回 |
-| 1 値のサイズ | 25MB | `MAX_MEDIA_BYTES` がこの上限そのもの |
+- **書き込みは R2 だけ**。`putMedia()` が `env.MEDIA`（R2 バケット
+  `bloom-media`）へ `httpMetadata.contentType` 付きで置く。
+- **読み取りは R2 を見て、無ければ旧 KV を見る**（`legacyKvMedia()`）。
+  R2 へ移す前に投稿されたものは KV にしか無いため、この二段構えが無いと
+  切り替えた瞬間に過去の投稿の画像が全部消える。
+- `GET /api/media/:key` は `Range` と `If-None-Match` をそのまま R2 へ渡すので、
+  部分取得（206）と 304 が効く。KV では原理的にできなかった。
 
-- **結果整合性**：`put` 直後の `get` は伝播が終わるまで `null` を返しうる。
-  `handleMedia` はこれを 404 にして返すので、アプリ側（`RemoteImage` /
-  `RemoteVideo`）が 404 のときだけ間を置いて読み直す。
-- **書き込み失敗**：上限に当たると `put` が例外を投げる。`putMedia()` が
-  これを捕まえて `503 media_store_unavailable` に変換し、`wrangler tail` の
-  ログへ残す（素の 500 にしない）。
-- **古い実体は自動では消えない**：キャッシュと違い KV は勝手に捨てないので、
-  アイコンを差し替えたときは `putAvatar` が古いキーを明示的に削除する。
+### 移行の状態
+
+| | 置き場 |
+|---|---|
+| R2 切り替え**後**に投稿されたもの | R2 のみ |
+| R2 切り替え**前**に投稿されたもの | 旧 KV のみ（読み取りフォールバックで配信） |
+
+**旧 KV へ新しい書き込みは一切行かない**ので、KV の容量がこれ以上増えることは
+ない。放置しても壊れないため、移行は「急がなくてよい残作業」の扱いでよい。
+
+### 旧 KV を空にする（任意）
+
+KV を畳みたくなったら、`wrangler kv key list` で拾って R2 へ入れ直し、
+最後に `wrangler.jsonc` の `kv_namespaces` と `src/index.ts` の
+`legacyKvMedia()` / `Env.MEDIA_LEGACY_KV` をまとめて削除する。
+
+> この一括コピーは本番データを触るため、**動作確認できていないスクリプトは
+> 置いていない**。実行する場合は、まず1件だけ手で移して
+> `GET /api/media/:key` が 200 を返すことを確かめてから全体へ広げること。
+
+### 保存に失敗したとき
+
+`putMedia()` が例外を捕まえて `503 media_store_unavailable` に変換し、
+`console.error` へ残す（素の 500 にしない）。`npx wrangler tail bloom-api` で
+その場で見える。
+
+### 古い実体の掃除
+
+アイコンを差し替えたときは `putAvatar` が旧キーを R2 と旧 KV の両方から
+消しに行く。DB が新しいキーを指してから消す順序なので、掃除に失敗しても
+アイコン変更そのものは成功する。
 
 ## 未実装
 

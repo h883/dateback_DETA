@@ -77,7 +77,7 @@ Login → Consent / Permissions → Tutorial → Home
 | 認証 | Firebase Authentication。Google ログイン実装済み、Apple は未実装（UI のみ） |
 | API | Cloudflare Workers（TypeScript） |
 | DB | Cloudflare D1 |
-| 画像・動画 | Cloudflare KV |
+| 画像・動画 | Cloudflare R2（旧 KV から移行中。読み取りのみ KV へフォールバック） |
 | 近距離検知 | BLE（`flutter_blue_plus` + `flutter_ble_peripheral`、フォアグラウンド限定） |
 | テーマ | Light / Dark / System（`shared_preferences` へ永続化） |
 

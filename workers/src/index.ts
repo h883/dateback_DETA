@@ -9,11 +9,27 @@ import { verifyIdToken, type VerifiedUser } from './auth';
 
 export interface Env {
   DB: D1Database;
+
   /**
-   * メディアの実体。R2 は無料枠でもカード登録が要るため KV を使っている。
-   * 1 値あたり 25MB まで。R2 に移すときは put/get をここだけ差し替えればよい。
+   * メディアの実体。保存も読み取りもここが正。
+   *
+   * 以前は KV に置いていたが、KV は「めったに書き換えない小さな値を大量に
+   * 読ませる」ための store で、無料枠がストレージ 1GB・書き込み 1,000回/日
+   * と狭く、かつ結果整合性のため投稿直後に 404 が返りうる。メディアには
+   * 向かないので R2 へ移した。
    */
-  MEDIA: KVNamespace;
+  MEDIA: R2Bucket;
+
+  /**
+   * R2 へ移す前のメディアが残っている旧 KV。**読み取りのフォールバック
+   * 専用**で、新しい書き込みは一切ここへ行かない。
+   *
+   * 移行前に投稿されたものは KV にしか無く、移行後のものは R2 にしか無い。
+   * 両方を見ることで、切り替えの瞬間に古い投稿の画像が消えるのを防ぐ。
+   * KV を空にできたら、このバインディングと [legacyKvMedia] ごと消してよい。
+   */
+  MEDIA_LEGACY_KV?: KVNamespace;
+
   FIREBASE_PROJECT_ID: string;
 }
 
@@ -25,6 +41,8 @@ const PROXIMITY_COOLDOWN_MS = 60_000;
 // クールダウン分のタイムラグを、投稿直後のその場共有では感じさせないため）。
 const RECENT_CONTACT_WINDOW_MS = 3 * 60 * 1000;
 
+// R2 の 1 オブジェクト上限ははるかに大きいが、2秒クリップに 25MB を超える
+// 必要は無く、端末の回線も守りたいのでアプリ側の上限として据え置く。
 const MAX_MEDIA_BYTES = 25 * 1024 * 1024;
 const MAX_AVATAR_BYTES = 4 * 1024 * 1024;
 
@@ -162,13 +180,12 @@ function toPost(row: PostRow) {
 }
 
 /**
- * メディアの実体を KV へ保存する。保存できたら null、駄目なら返すべき
+ * メディアの実体を R2 へ保存する。保存できたら null、駄目なら返すべき
  * エラー応答を返す。
  *
- * KV の無料枠は「1日あたり1,000書き込み」「namespace 全体で1GB」で、
- * どちらかを超えると put が例外を投げる。そのまま抜けると呼び出し元には
- * 素の 500 しか見えず、アプリ側にも「投稿できませんでした」としか出ない。
- * 原因が上限であることをログとエラーコードに残す。
+ * 保存に失敗したときそのまま抜けると、呼び出し元には素の 500 しか見えず
+ * アプリ側にも「投稿できませんでした」としか出ない。原因を追えるよう
+ * ログと専用のエラーコードに残す。
  */
 async function putMedia(
   env: Env,
@@ -177,7 +194,7 @@ async function putMedia(
   contentType: string,
 ): Promise<Response | null> {
   try {
-    await env.MEDIA.put(key, bytes, { metadata: { contentType } });
+    await env.MEDIA.put(key, bytes, { httpMetadata: { contentType } });
     return null;
   } catch (e) {
     console.error('MEDIA.put failed', key, bytes.byteLength, e);
@@ -187,6 +204,46 @@ async function putMedia(
       'メディアを保存できませんでした。時間をおいて試してください。',
     );
   }
+}
+
+/**
+ * 旧 KV に残っているメディアを読む（R2 に無かったときだけ呼ばれる）。
+ *
+ * KV には Range 取得の API が無いので、ここは常に全体を返す。移行が
+ * 終わればこの関数ごと消える前提の、一時的な経路。
+ */
+async function legacyKvMedia(key: string, env: Env): Promise<Response> {
+  const legacy = env.MEDIA_LEGACY_KV;
+  if (!legacy) return fail(404, 'not_found', 'No such object');
+
+  const { value, metadata } = await legacy.getWithMetadata<{
+    contentType?: string;
+  }>(key, 'stream');
+  if (!value) return fail(404, 'not_found', 'No such object');
+
+  return new Response(value, {
+    headers: {
+      'content-type': metadata?.contentType ?? 'application/octet-stream',
+      'cache-control': 'private, max-age=86400',
+    },
+  });
+}
+
+/**
+ * R2 が解決した範囲を Content-Range の値へ直す。[size] はレンジではなく
+ * オブジェクト全体の大きさ。
+ */
+function contentRangeValue(range: R2Range, size: number): string {
+  if ('suffix' in range) {
+    const start = Math.max(0, size - range.suffix);
+    return `bytes ${start}-${size - 1}/${size}`;
+  }
+  const start = range.offset ?? 0;
+  const end =
+    range.length === undefined
+      ? size - 1
+      : Math.min(size - 1, start + range.length - 1);
+  return `bytes ${start}-${end}/${size}`;
 }
 
 /**
@@ -358,7 +415,7 @@ async function route(
         : fail(405, 'method_not_allowed', method);
     case 'media':
       return method === 'GET'
-        ? handleMedia(rest.join('/'), env, user)
+        ? handleMedia(rest.join('/'), request, env, user)
         : fail(405, 'method_not_allowed', method);
     default:
       return fail(404, 'not_found', url.pathname);
@@ -478,11 +535,18 @@ async function putAvatar(
   // 失敗したときに avatar_key が実体の無いキーを指したままになる。
   const previousKey = previous?.avatar_key;
   if (previousKey && previousKey !== key) {
+    // 旧アイコンが R2 と旧 KV のどちらにあるかは、そのアイコンをいつ
+    // 上げたかで変わる。両方消しに行く（無ければ何も起きない）。
     try {
       await env.MEDIA.delete(previousKey);
     } catch (e) {
       // 掃除の失敗でアイコン変更そのものを失敗にはしない。
       console.error('MEDIA.delete failed', previousKey, e);
+    }
+    try {
+      await env.MEDIA_LEGACY_KV?.delete(previousKey);
+    } catch (e) {
+      console.error('MEDIA_LEGACY_KV.delete failed', previousKey, e);
     }
   }
 
@@ -1180,6 +1244,7 @@ async function handleNotifications(
 
 async function handleMedia(
   key: string,
+  request: Request,
   env: Env,
   user: VerifiedUser,
 ): Promise<Response> {
@@ -1206,16 +1271,33 @@ async function handleMedia(
     return fail(403, 'not_visible', 'この画像は閲覧できません');
   }
 
-  const { value, metadata } = await env.MEDIA.getWithMetadata<{
-    contentType?: string;
-  }>(key, 'stream');
-  if (!value) return fail(404, 'not_found', 'No such object');
-
-  return new Response(value, {
-    headers: {
-      'content-type': metadata?.contentType ?? 'application/octet-stream',
-      // キーは UUID なので推測できない。端末側でキャッシュさせる。
-      'cache-control': 'private, max-age=86400',
-    },
+  // R2 は Range と If-None-Match をそのまま解釈できる。動画のシークと
+  // 回線が切れたときの再開ダウンロードはこれに乗る（KV には無かった）。
+  const object = await env.MEDIA.get(key, {
+    range: request.headers,
+    onlyIf: request.headers,
   });
+
+  // R2 に無ければ、移行前に KV へ置かれたものを見る。
+  if (object === null) return legacyKvMedia(key, env);
+
+  const headers = new Headers();
+  object.writeHttpMetadata(headers);
+  headers.set('etag', object.httpEtag);
+  headers.set('accept-ranges', 'bytes');
+  // キーは UUID なので推測できない。端末側でキャッシュさせる。
+  headers.set('cache-control', 'private, max-age=86400');
+  if (!headers.has('content-type')) {
+    headers.set('content-type', 'application/octet-stream');
+  }
+
+  // onlyIf が外れた（＝端末が持っているものが最新）ときは body が付かない。
+  if (!('body' in object)) return new Response(null, { status: 304, headers });
+
+  if (request.headers.has('range') && object.range) {
+    headers.set('content-range', contentRangeValue(object.range, object.size));
+    return new Response(object.body, { status: 206, headers });
+  }
+
+  return new Response(object.body, { headers });
 }

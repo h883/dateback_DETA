@@ -93,7 +93,8 @@ Windows の keytool は Android Studio に同梱されている。
 | アカウント | `user@example.com` / `YOUR_CLOUDFLARE_ACCOUNT_ID` |
 | Worker | `https://bloom-api.example.workers.dev` |
 | D1 | `bloom` / `8287e3eb-a958-4693-9bed-abf6cf04c6e1` |
-| KV（メディア） | `MEDIA` / `728fd7b51a3846458c038fd43f32a654` |
+| R2（メディア） | `MEDIA` / バケット `bloom-media` |
+| KV（旧メディア・読み取り専用） | `MEDIA_LEGACY_KV` / `728fd7b51a3846458c038fd43f32a654` |
 
 これらの ID は `workers/wrangler.jsonc` に書いてあるので、リポジトリを clone すれば
 そのまま使える。
@@ -116,18 +117,28 @@ npx wrangler deploy
 npx wrangler d1 migrations apply bloom --remote
 ```
 
-### メディアを R2 ではなく KV に置いている理由
+### メディアの置き場（R2。旧 KV から移行中）
 
-R2 は無料枠でもクレジットカードの登録を求められるため、カード不要で
-1値あたり 25MB まで置ける KV を使っている。
-KV 無料枠は**ストレージ 1GB（namespace 全体）**・**書き込み 1,000回/日**・
-**読み取り 100,000回/日**、そして結果整合性（投稿直後の数秒はまれに
-メディアが 404 になり得る）。先に当たるのはストレージなので、35mm は投稿前に
-長辺 1600px・JPEG quality 85 へ縮小している。404 はアプリ側が読み直して吸収し、
-書き込み上限は `503 media_store_unavailable` として返る。
+メディアの実体は **R2**（バケット `bloom-media`）に置く。当初はカード登録を
+避けて KV を使っていたが、KV は無料枠がストレージ 1GB・書き込み 1,000回/日と
+狭く、結果整合性のため投稿直後に 404 が返りうるため R2 へ移した。
 
-R2 に移す場合は `workers/src/index.ts` の
-`put` / `getWithMetadata` と `wrangler.jsonc` のバインディングだけ差し替えればよい。
+**書き込みは R2 のみ、読み取りは R2 →（無ければ）旧 KV の順**に見る。
+切り替え前に投稿されたメディアは KV にしか無いので、これが無いと過去の投稿の
+画像が全部消える。旧 KV へ新しい書き込みは行かないため容量は増えず、
+KV を空にする作業は急がなくてよい。
+
+R2 バケットがまだ無い環境では、先に作ること。
+
+```bash
+cd workers && npx wrangler r2 bucket create bloom-media
+```
+
+**R2 の有効化には支払い方法の登録が必要になる場合がある。** 無料枠
+（ストレージ 10GB・エグレス無料）に収まっていれば請求は発生しない。
+
+なお 35mm は投稿前に長辺 1600px・JPEG quality 85 へ縮小している。KV の 1GB
+対策として入れたものだが、通信量と表示速度の面で R2 でも有効なので残している。
 
 詳細は [workers/README.md](../workers/README.md)。
 
