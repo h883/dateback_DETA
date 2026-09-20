@@ -162,6 +162,34 @@ function toPost(row: PostRow) {
 }
 
 /**
+ * メディアの実体を KV へ保存する。保存できたら null、駄目なら返すべき
+ * エラー応答を返す。
+ *
+ * KV の無料枠は「1日あたり1,000書き込み」「namespace 全体で1GB」で、
+ * どちらかを超えると put が例外を投げる。そのまま抜けると呼び出し元には
+ * 素の 500 しか見えず、アプリ側にも「投稿できませんでした」としか出ない。
+ * 原因が上限であることをログとエラーコードに残す。
+ */
+async function putMedia(
+  env: Env,
+  key: string,
+  bytes: ArrayBuffer,
+  contentType: string,
+): Promise<Response | null> {
+  try {
+    await env.MEDIA.put(key, bytes, { metadata: { contentType } });
+    return null;
+  } catch (e) {
+    console.error('MEDIA.put failed', key, bytes.byteLength, e);
+    return fail(
+      503,
+      'media_store_unavailable',
+      'メディアを保存できませんでした。時間をおいて試してください。',
+    );
+  }
+}
+
+/**
  * プロフィール（アイコン・名前・自己紹介）を見せていい相手かどうか。
  * フレンド、または一度でも近距離ですれ違ったことがある相手だけ許可する。
  * 面識のない人からは見えないようにする。
@@ -424,8 +452,17 @@ async function putAvatar(
     return fail(413, 'too_large', 'アイコンは4MBまでです');
   }
 
+  // 差し替え前のキーを控えておく。KV は本体であってキャッシュではないので、
+  // 明示的に消さない限り古いアイコンが永久に残り、1GB の枠を食い続ける。
+  const previous = await env.DB.prepare(
+    'SELECT avatar_key FROM users WHERE uid = ?',
+  )
+    .bind(user.uid)
+    .first<{ avatar_key: string | null }>();
+
   const key = `avatars/${user.uid}/${crypto.randomUUID()}`;
-  await env.MEDIA.put(key, bytes, { metadata: { contentType } });
+  const stored = await putMedia(env, key, bytes, contentType);
+  if (stored) return stored;
 
   const ts = now();
   // プロフィール未作成でもアイコンだけ先に置けるよう INSERT も面倒を見る。
@@ -436,6 +473,18 @@ async function putAvatar(
   )
     .bind(user.uid, `user_${user.uid.slice(0, 8)}`, key, ts)
     .run();
+
+  // DB が新しいキーを指してから古い実体を消す。先に消すと、直後の DB 更新が
+  // 失敗したときに avatar_key が実体の無いキーを指したままになる。
+  const previousKey = previous?.avatar_key;
+  if (previousKey && previousKey !== key) {
+    try {
+      await env.MEDIA.delete(previousKey);
+    } catch (e) {
+      // 掃除の失敗でアイコン変更そのものを失敗にはしない。
+      console.error('MEDIA.delete failed', previousKey, e);
+    }
+  }
 
   const row = await env.DB.prepare(
     'SELECT uid, username, bio, avatar_key FROM users WHERE uid = ?',
@@ -535,7 +584,8 @@ async function handlePosts(
 
     const id = crypto.randomUUID();
     const key = `posts/${user.uid}/${id}`;
-    await env.MEDIA.put(key, bytes, { metadata: { contentType } });
+    const stored = await putMedia(env, key, bytes, contentType);
+    if (stored) return stored;
 
     // 投稿時刻はサーバー時刻。端末時計のずれで閲覧制御が狂わないようにする。
     const createdAt = now();

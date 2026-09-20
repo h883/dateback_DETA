@@ -7,6 +7,12 @@ import '../theme/bloom_theme.dart';
 ///
 /// ID トークンは期限付きなので毎回 [BloomApi.mediaHeaders] を引き直す。
 /// 取得は非同期なので、揃うまでは [placeholder] を出す。
+///
+/// メディアの実体は Cloudflare KV にあり、KV は結果整合性なので「投稿した
+/// 直後に自分の写真を開く」と、まだ伝播が終わっておらず 404 が返ることが
+/// ある。これは恒久的な失敗ではないので、404 のときだけ間を置いて読み直す
+/// ([_retryBackoff])。403(閲覧権限なし)や 401 は待っても変わらないため
+/// 再試行しない。
 class RemoteImage extends StatefulWidget {
   const RemoteImage({
     super.key,
@@ -28,7 +34,22 @@ class RemoteImage extends StatefulWidget {
 }
 
 class _RemoteImageState extends State<RemoteImage> {
+  /// KV の伝播待ちで 404 になったときに読み直す間隔。長さがそのまま
+  /// 再試行回数になる。伝播は通常数秒で終わるので、合計10秒で諦める。
+  static const _retryBackoff = [
+    Duration(seconds: 1),
+    Duration(seconds: 3),
+    Duration(seconds: 6),
+  ];
+
   late Future<Map<String, String>> _headers = widget.api.mediaHeaders();
+
+  /// 何回目の読み直しか。[Image] の key に混ぜて、確実に読み直させる。
+  int _attempt = 0;
+
+  /// 再試行を予約済みかどうか。errorBuilder は1回の失敗で複数回呼ばれ
+  /// うるので、二重に予約しないための見張り。
+  bool _retryScheduled = false;
 
   @override
   void didUpdateWidget(RemoteImage oldWidget) {
@@ -36,6 +57,26 @@ class _RemoteImageState extends State<RemoteImage> {
     if (oldWidget.api != widget.api) {
       _headers = widget.api.mediaHeaders();
     }
+    if (oldWidget.path != widget.path) {
+      _attempt = 0;
+      _retryScheduled = false;
+    }
+  }
+
+  /// KV の伝播待ち(404)だったときだけ、間を置いて読み直す。
+  void _scheduleRetryIfPropagating(Object error) {
+    if (_retryScheduled) return;
+    if (error is! NetworkImageLoadException || error.statusCode != 404) return;
+    if (_attempt >= _retryBackoff.length) return;
+
+    _retryScheduled = true;
+    Future<void>.delayed(_retryBackoff[_attempt], () {
+      if (!mounted) return;
+      setState(() {
+        _attempt++;
+        _retryScheduled = false;
+      });
+    });
   }
 
   @override
@@ -49,11 +90,15 @@ class _RemoteImageState extends State<RemoteImage> {
         if (headers == null) return fallback;
         return Image.network(
           widget.api.mediaUrl(widget.path),
+          key: ValueKey(_attempt),
           headers: headers,
           fit: widget.fit,
           loadingBuilder: (context, child, progress) =>
               progress == null ? child : fallback,
-          errorBuilder: (context, error, stack) => fallback,
+          errorBuilder: (context, error, stack) {
+            _scheduleRetryIfPropagating(error);
+            return fallback;
+          },
         );
       },
     );

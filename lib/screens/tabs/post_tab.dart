@@ -63,6 +63,18 @@ class PostFailure extends PostOutcome {
 /// 比率のまま(Phase 7 の制約として報告する)。
 const _targetAspect = 3 / 2;
 
+/// 投稿する JPEG の長辺の上限(px)。
+///
+/// 表示先はスマートフォンの feed なので、これを超える解像度は見た目にほぼ
+/// 寄与しない一方で、メディアの保存先である Cloudflare KV の容量を食う。
+/// KV の無料枠は namespace 全体で 1GB しかなく、端末のカメラ解像度そのまま
+/// (数MB/枚)では数百枚で枯れる。投稿直前にここまで縮小する。
+const _maxUploadEdge = 1600;
+
+/// 投稿する JPEG の品質。1600px 長辺では 92 と 85 の差はほぼ見えない一方、
+/// ファイルサイズは 4 割ほど小さくなる。
+const _uploadJpegQuality = 85;
+
 /// dateback の日付表示(いわゆる dateback スタンプ)は 35mm のときだけ。
 /// 8mm では表示しない。副作用の無い純粋関数(widget test 用)。
 bool showDatebackForMode(PostKind mode) => mode == PostKind.film35mm;
@@ -111,7 +123,16 @@ Uint8List _cropAndFilterTo3x2(_CropAndFilterParams params) {
   final cropped =
       img.copyCrop(oriented, x: x, y: y, width: cropW, height: cropH);
   applyColorMatrix(cropped, params.filterMatrix);
-  return img.encodeJpg(cropped, quality: 92);
+  // フィルターを焼き込んでから縮小する(縮小を先にすると、クリップされた
+  // ハイライトの出方がプレビューとわずかにずれる)。3:2 なので長辺は width。
+  final sized = cropped.width > _maxUploadEdge
+      ? img.copyResize(
+          cropped,
+          width: _maxUploadEdge,
+          interpolation: img.Interpolation.average,
+        )
+      : cropped;
+  return img.encodeJpg(sized, quality: _uploadJpegQuality);
 }
 
 /// 投稿画面(仕様書 11)。

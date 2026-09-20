@@ -120,8 +120,13 @@ npx wrangler d1 migrations apply bloom --remote
 
 R2 は無料枠でもクレジットカードの登録を求められるため、カード不要で
 1値あたり 25MB まで置ける KV を使っている。
-KV 無料枠は**書き込み 1,000回/日**、結果整合性（投稿直後の数秒はまれに
-メディアが 404 になり得る）。R2 に移す場合は `workers/src/index.ts` の
+KV 無料枠は**ストレージ 1GB（namespace 全体）**・**書き込み 1,000回/日**・
+**読み取り 100,000回/日**、そして結果整合性（投稿直後の数秒はまれに
+メディアが 404 になり得る）。先に当たるのはストレージなので、35mm は投稿前に
+長辺 1600px・JPEG quality 85 へ縮小している。404 はアプリ側が読み直して吸収し、
+書き込み上限は `503 media_store_unavailable` として返る。
+
+R2 に移す場合は `workers/src/index.ts` の
 `put` / `getWithMetadata` と `wrangler.jsonc` のバインディングだけ差し替えればよい。
 
 詳細は [workers/README.md](../workers/README.md)。

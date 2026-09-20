@@ -1,6 +1,7 @@
 # bloom-api （Cloudflare Workers）
 
-本SNS のバックエンド。投稿・フレンド・閲覧権限を D1 で、画像と動画を R2 で管理する。
+本SNS のバックエンド。投稿・フレンド・閲覧権限を D1 で、画像と動画を KV で管理する。
+KV を選んだ理由と制約は [仕様書 6.1](../仕様書.md) を参照。
 
 仕様書 4.4 のとおり、**投稿を見てよいかどうかの判定はすべてここで行う**。
 API はその時点で閲覧可能な投稿だけを返すので、アプリ側で投稿時刻と閲覧可能時刻を
@@ -13,7 +14,7 @@ API はその時点で閲覧可能な投稿だけを返すので、アプリ側�
 | `src/index.ts` | ルーティングと全エンドポイント |
 | `src/auth.ts` | Firebase ID トークンの検証（JWKS + WebCrypto） |
 | `migrations/0001_init.sql` | D1 のスキーマ |
-| `wrangler.jsonc` | Worker / D1 / R2 の設定 |
+| `wrangler.jsonc` | Worker / D1 / KV の設定 |
 
 ## セットアップ
 
@@ -25,15 +26,16 @@ npm install
 npx wrangler login
 ```
 
-D1 と R2 を作る。`d1 create` が出力する `database_id` を `wrangler.jsonc` の
-`REPLACE_WITH_D1_DATABASE_ID` に貼り替える。
+D1 と KV を作る。それぞれが出力する id を `wrangler.jsonc` の
+`d1_databases[].database_id` と `kv_namespaces[].id` に貼り替える
+（既存の本番環境に繋ぐだけなら、どちらも記載済みなので作り直さない）。
 
 ```bash
 npx wrangler d1 create bloom
 ```
 
 ```bash
-npx wrangler r2 bucket create bloom-media
+npx wrangler kv namespace create MEDIA
 ```
 
 スキーマを流す。
@@ -91,7 +93,7 @@ npx wrangler dev
 | POST | `/api/friends/requests/:uid/accept` | 承認 |
 | DELETE | `/api/friends/requests/:uid` | 取り消し／却下 |
 | POST | `/api/proximity` | 近距離イベントの記録と閲覧権限交換 |
-| GET | `/api/media/:key` | R2 のメディア配信 |
+| GET | `/api/media/:key` | KV のメディア配信 |
 
 ## 閲覧制御のしくみ
 
@@ -104,6 +106,27 @@ author の投稿は visible_until 以前まで見られる」を表す。
 
 投稿の取得は `VISIBLE_POSTS_SQL` を通す。自分の投稿は常に見え、他人の投稿は
 上の行があり、かつ `posts.created_at <= visible_until` のものだけが返る。
+
+## メディア（KV）の運用上の注意
+
+KV は「消えては困るものを置く永続ストア」だが、読み取り経路がキャッシュの
+ように各地へ配られる作りのため、メディア置き場としては次の癖がある。
+
+| 制約（無料枠） | 値 | 効いてくる場所 |
+|---|---|---|
+| ストレージ | **namespace 全体で 1GB** | いちばん先に当たる。35mm は投稿前に長辺 1600px / JPEG quality 85 へ縮小している（`lib/screens/tabs/post_tab.dart`） |
+| 書き込み | 1,000 回／日 | 1 投稿 = 1 write、アイコン変更 = 1 write + 1 delete |
+| 読み取り | 100,000 回／日 | 表示のたびに1回 |
+| 1 値のサイズ | 25MB | `MAX_MEDIA_BYTES` がこの上限そのもの |
+
+- **結果整合性**：`put` 直後の `get` は伝播が終わるまで `null` を返しうる。
+  `handleMedia` はこれを 404 にして返すので、アプリ側（`RemoteImage` /
+  `RemoteVideo`）が 404 のときだけ間を置いて読み直す。
+- **書き込み失敗**：上限に当たると `put` が例外を投げる。`putMedia()` が
+  これを捕まえて `503 media_store_unavailable` に変換し、`wrangler tail` の
+  ログへ残す（素の 500 にしない）。
+- **古い実体は自動では消えない**：キャッシュと違い KV は勝手に捨てないので、
+  アイコンを差し替えたときは `putAvatar` が古いキーを明示的に削除する。
 
 ## 未実装
 

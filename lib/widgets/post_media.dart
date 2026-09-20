@@ -47,8 +47,17 @@ class RemoteVideo extends StatefulWidget {
 }
 
 class _RemoteVideoState extends State<RemoteVideo> {
+  /// メディアの実体がある Cloudflare KV は結果整合性なので、投稿した直後は
+  /// まだ伝播が終わっておらず initialize() が失敗することがある。
+  /// [RemoteImage] と違い video_player は HTTP ステータスを見せてくれない
+  /// ため原因を区別できない。回数だけ絞って読み直す。
+  static const _retryBackoff = [Duration(seconds: 2), Duration(seconds: 5)];
+
   VideoPlayerController? _controller;
   bool _failed = false;
+
+  /// 何回読み直したか。path が変わったら 0 へ戻す。
+  int _attempt = 0;
 
   @override
   void initState() {
@@ -63,28 +72,43 @@ class _RemoteVideoState extends State<RemoteVideo> {
       _controller?.dispose();
       _controller = null;
       _failed = false;
+      _attempt = 0;
       _open();
     }
   }
 
   Future<void> _open() async {
+    // 再試行で待っている間に path が差し替わることがある。開き始めた対象を
+    // 控えておき、途中で変わっていたら結果を捨てる(古い動画を新しい行へ
+    // 出してしまわないようにする)。
+    final opening = widget.path;
     try {
       final headers = await widget.api.mediaHeaders();
       final controller = VideoPlayerController.networkUrl(
-        Uri.parse(widget.api.mediaUrl(widget.path)),
+        Uri.parse(widget.api.mediaUrl(opening)),
         httpHeaders: headers,
       );
       await controller.initialize();
       await controller.setLooping(true);
       await controller.setVolume(0);
       await controller.play();
-      if (!mounted) {
+      if (!mounted || widget.path != opening) {
         await controller.dispose();
         return;
       }
       setState(() => _controller = controller);
     } catch (_) {
-      if (mounted) setState(() => _failed = true);
+      if (!mounted || widget.path != opening) return;
+      // 伝播待ちの可能性があるうちは、間を置いて読み直す。
+      if (_attempt < _retryBackoff.length) {
+        final delay = _retryBackoff[_attempt];
+        _attempt++;
+        await Future<void>.delayed(delay);
+        if (!mounted || widget.path != opening) return;
+        await _open();
+        return;
+      }
+      setState(() => _failed = true);
     }
   }
 
